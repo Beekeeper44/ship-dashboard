@@ -21,14 +21,17 @@ Environment Variables** (values in `.env.example`):
 
 | Variable | Required | What it's for |
 |---|---|---|
-| `METABASE_URL` | yes | `https://arena-club.metabaseapp.com` |
+| `METABASE_HOST` (or `METABASE_URL`) | yes | `https://arena-club.metabaseapp.com` — scheme optional |
 | `METABASE_API_KEY` | yes | Metabase → Settings → Authentication → API keys |
 | `METABASE_CARD_ID` | no | defaults to `38974` |
 | `ANTHROPIC_API_KEY` | for service split | reads Ground vs Express off the label |
 | `DATABASE_URL` | recommended | Neon Postgres, caches each label read |
 
-Redeploy after adding them. Without the Metabase vars the page still loads —
-it falls back to built-in sample rows so you can see the layout.
+Redeploy after adding them. Without the Metabase vars the page still loads, but a banner says it isn't
+connected and the rows shown are samples.
+
+**After adding or renaming a variable you must redeploy** — Vercel only injects
+environment variables at build time, so an existing deployment won't pick them up.
 
 ## Local
 

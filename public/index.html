@@ -718,8 +718,8 @@ function setStatus(kind, detail){
     setTimeout(()=>{ el.hidden = true; }, 4000);
   } else if(kind === "err"){
     el.className = "status err";
-    el.innerHTML = '<span class="d"></span><span><b>Metabase returned an error.</b> ' + detail +
-      ' — check <code>METABASE_API_KEY</code> and <code>METABASE_CARD_ID</code> in Vercel.</span>';
+    el.innerHTML = '<span class="d"></span><span><b>Metabase error.</b> ' + detail +
+      ' — check the variables in Vercel, then <b>redeploy</b> (env vars only apply at build time).</span>';
   } else {
     el.className = "status sample";
     el.innerHTML = '<span class="d"></span><span><b>Not connected to Metabase.</b> ' +

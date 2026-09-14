@@ -7,14 +7,23 @@ import { getResolvedServices, getEmployeeNames } from './_store.js';
 
 const CARD_ID = process.env.METABASE_CARD_ID || '38974';
 
+// Accept either name, and tolerate a bare host with no scheme or a trailing slash.
+function metabaseBase() {
+  let base = process.env.METABASE_HOST || process.env.METABASE_URL || '';
+  base = base.trim().replace(/\/+$/, '');
+  if (base && !/^https?:\/\//i.test(base)) base = 'https://' + base;
+  return base;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'method_not_allowed' });
   }
-  if (!process.env.METABASE_URL || !process.env.METABASE_API_KEY) {
+  const BASE = metabaseBase();
+  if (!BASE || !process.env.METABASE_API_KEY) {
     return res.status(500).json({
       error: 'missing_env',
-      detail: 'Set METABASE_URL and METABASE_API_KEY in Vercel project settings.',
+      detail: 'Set METABASE_HOST (or METABASE_URL) and METABASE_API_KEY in Vercel project settings, then redeploy.',
     });
   }
 
@@ -42,7 +51,7 @@ export default async function handler(req, res) {
   let raw;
   try {
     const r = await fetch(
-      `${process.env.METABASE_URL}/api/card/${CARD_ID}/query/json`,
+      `${BASE}/api/card/${CARD_ID}/query/json`,
       {
         method: 'POST',
         headers: {
