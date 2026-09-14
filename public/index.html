@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ship Dashboard — Arena Club</title>
+<style>
+  :root{
+    --bg:#000;
+    --panel:#0a0a0a;
+    --line:#1e1e1e;
+    --line-soft:#161616;
+    --ink:#ffffff;
+    --ink-dim:#ffffff;
+    --ink-faint:#ffffff;
+    --green:#39ff14;
+    --gold:#e8b04b;
+    --red:#ef4444;
+
+    /* carrier palette — set by ops */
+    --express:#ff7a2f;
+    --ground:#9b7bf0;
+    --dhl:#ffcd01;
+    --usps:#4d93d9;
+    --unknown:#ffffff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg)}
+  body{
+    color:var(--ink);
+    font:13px/1.4 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{padding:18px 20px 60px;max-width:2560px;margin:0 auto}
+
+  /* ---------- header ---------- */
+  .top{display:flex;align-items:flex-start;gap:18px;margin-bottom:18px}
+  .logo{flex:0 0 auto;width:70px;height:70px;position:relative;background:none;border:none;padding:0;cursor:pointer;border-radius:6px;transition:opacity .12s,box-shadow .12s}
+  .logo:hover{opacity:.82}
+  .logo:focus-visible{outline:none;box-shadow:0 0 0 2px var(--green)}
+  .logo img{width:100%;height:100%;object-fit:contain;display:block}
+  h1{margin:0;font-size:34px;line-height:1.05;font-weight:700;letter-spacing:-0.5px}
+  h1 .g{color:var(--green);text-shadow:0 0 18px rgba(57,255,20,.35)}
+  .sub{margin-top:8px;color:#ffffff;font-size:15px;display:flex;align-items:center;gap:7px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:0 0 auto}
+  .meta{margin-left:auto;text-align:right;color:#ffffff;font-size:14px;line-height:1.8;white-space:nowrap}
+  .meta .live{color:var(--green)}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+  .tab{
+    background:transparent;border:1px solid transparent;border-radius:5px;
+    color:#ffffff;font:inherit;font-size:16px;font-weight:600;letter-spacing:.9px;
+    padding:12px 20px;cursor:pointer;text-transform:uppercase;white-space:nowrap;
+  }
+  .tab:hover{color:var(--green)}
+  .tab .n{color:#ffffff;margin-left:10px;font-weight:700}
+  .tab.on{border-color:var(--green);color:var(--green)}
+  .tab.on .n{color:var(--green)}
+  .tabs .push{margin-left:auto}
+  .btn{
+    background:#0d0d0d;border:1px solid var(--line);border-radius:5px;color:#ffffff;
+    font:inherit;font-size:13px;letter-spacing:.8px;text-transform:uppercase;
+    padding:11px 17px;cursor:pointer;white-space:nowrap;
+  }
+  .btn:hover{border-color:#333;background:#131313}
+  .btn.go{background:var(--green);border-color:var(--green);color:#04210a;font-weight:700}
+  .btn.go:hover{background:#5cff3f}
+
+  /* ---------- filters ---------- */
+  .filters{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+  .f{display:flex;flex-direction:column;gap:5px}
+  .f label{color:#ffffff;font-size:13px;letter-spacing:.4px}
+  .f input,.f select{
+    background:#0d0d0d;border:1px solid var(--line);border-radius:4px;color:var(--ink);
+    font:inherit;font-size:14px;padding:10px 12px;min-width:150px;
+  }
+  .f input:focus,.f select:focus{outline:none;border-color:var(--green)}
+  .f input::placeholder{color:rgba(255,255,255,.55)}
+  .acts{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* ---------- stat strip ---------- */
+  .stats[hidden]{display:none}
+  .stats{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-bottom:20px;flex-wrap:wrap}
+  .stat{flex:1 1 250px;min-width:225px;padding:24px 26px 30px;border-right:1px solid var(--line);position:relative}
+  .stat:last-child{border-right:none}
+  .stat .k{color:#ffffff;font-size:17px;font-weight:600;letter-spacing:1.1px;text-transform:uppercase}
+  .stat .v{font-size:52px;font-weight:700;letter-spacing:-1.2px;margin-top:14px;line-height:1}
+  .stat .s{color:#ffffff;font-size:15px;margin-top:12px}
+  .stat .rule{position:absolute;left:24px;right:24px;bottom:14px;height:3px;border-radius:3px;opacity:.85}
+
+
+  /* ---------- carrier tiles ---------- */
+  .carriers[hidden]{display:none}
+  .carriers{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+  .ctile{
+    flex:1 1 230px;min-width:210px;background:#0a0a0a;border:1px solid var(--line);
+    border-radius:7px;padding:20px 22px 18px;cursor:pointer;position:relative;
+    display:flex;flex-direction:column;gap:16px;text-align:left;font:inherit;color:inherit;
+    transition:border-color .12s,background .12s;
+  }
+  .ctile:hover{border-color:#3a3a3a;background:#101010}
+  .ctile.on{border-color:var(--tint);background:#0e0e0e}
+  .ctile.on::after{content:"";position:absolute;inset:0;border-radius:5px;box-shadow:inset 0 0 0 1px var(--tint);pointer-events:none}
+  .ctile .mark{display:flex;align-items:center;gap:14px}
+  .ctile .mark img{width:52px;height:52px;border-radius:5px;object-fit:contain;flex:0 0 auto}
+  .ctile .mark .fake{
+    width:52px;height:52px;border-radius:5px;flex:0 0 auto;display:flex;align-items:center;
+    justify-content:center;font-weight:800;font-size:20px;background:rgba(255,255,255,.06);color:var(--tint);
+    border:1px dashed rgba(255,255,255,.18);
+  }
+  .ctile .nm{font-size:17px;font-weight:600;letter-spacing:.3px;line-height:1.25;color:#ffffff}
+  .ctile .row{display:flex;align-items:flex-end;justify-content:space-between;gap:8px}
+  .ctile .v{font-size:42px;font-weight:700;letter-spacing:-1px;line-height:1;color:var(--tint)}
+  .ctile .c{font-size:15px;color:#ffffff;text-align:right;line-height:1.6}
+  .ctile .bar{height:3px;border-radius:3px;background:var(--tint);opacity:.9}
+  .ctile.zero{opacity:.42}
+  .ctile.zero .v{color:#ffffff}
+
+  /* ---------- team ---------- */
+  th .ar{opacity:.35;font-size:11px;margin-left:6px}
+  th.on .ar{opacity:1;color:var(--green)}
+  .tip{
+    position:fixed;z-index:80;pointer-events:none;opacity:0;transition:opacity .09s;
+    background:#0c0c0c;border:1px solid #333;border-radius:6px;padding:10px 12px;
+    font-size:12px;color:#fff;box-shadow:0 8px 28px rgba(0,0,0,.6);
+  }
+  .tip.on{opacity:1}
+  .tip h4{margin:0 0 8px;font-size:12px;font-weight:600;letter-spacing:.3px}
+  .tip .r{display:grid;grid-template-columns:11px 1fr 42px 74px;align-items:center;gap:10px;padding:4px 0;white-space:nowrap}
+  .tip .r i{width:10px;height:10px;border-radius:2px}
+  .tip .r b{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+  .tip .r em{font-style:normal;font-variant-numeric:tabular-nums;color:rgba(255,255,255,.7);text-align:right}
+  .tip .tot{margin-top:8px;padding-top:7px;border-top:1px solid #262626;display:flex;justify-content:space-between;gap:12px}
+  .mix{display:flex;height:12px;width:230px;border-radius:2px;overflow:hidden;background:#161616}
+  .mix i{display:block;height:100%}
+  .namebtn{background:none;border:none;color:#fff;font:inherit;font-weight:600;cursor:pointer;padding:0;text-align:left}
+  .namebtn:hover{color:var(--green)}
+  .namebtn.gap{color:var(--red);font-weight:500}
+  .daily{display:flex;align-items:flex-end;gap:5px;padding:20px 16px 14px;overflow-x:auto;min-height:150px}
+  .bar2{flex:0 0 30px;display:flex;flex-direction:column;align-items:center;gap:6px}
+  .bar2 .col{width:100%;display:flex;flex-direction:column-reverse;border-radius:2px;overflow:hidden;min-height:2px}
+  .bar2 .col i{display:block;width:100%}
+  .bar2 .n{font-size:11px;color:#fff;font-variant-numeric:tabular-nums}
+  .bar2 .d{font-size:9.5px;color:rgba(255,255,255,.75);white-space:nowrap}
+  .bar2.none .col{background:#1a1a1a;height:2px}
+
+  /* ---------- modal ---------- */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:90;display:none;align-items:center;justify-content:center;padding:28px}
+  .modal.on{display:flex}
+  .mbox{background:#0a0a0a;border:1px solid #2a2a2a;border-radius:10px;width:min(780px,94vw);max-height:88vh;overflow:auto;box-shadow:0 24px 70px rgba(0,0,0,.7)}
+  .mtop{display:flex;align-items:flex-start;gap:16px;padding:22px 24px 18px;border-bottom:1px solid var(--line)}
+  .mtop h3{margin:0;font-size:26px;font-weight:700;letter-spacing:-.3px}
+  .mtop .x{margin-left:auto;background:none;border:none;color:#fff;font-size:22px;cursor:pointer;line-height:1;padding:2px 6px}
+  .mtop .x:hover{color:var(--green)}
+  .mgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+  .mgrid div{background:#0a0a0a;padding:20px 22px}
+  .mgrid .k{font-size:13px;letter-spacing:1px;text-transform:uppercase;color:#fff;opacity:1}
+  .mgrid .v{font-size:34px;font-weight:700;letter-spacing:-.6px;margin-top:6px}
+  .msec{padding:20px 24px}
+  .msec h5{margin:0 0 16px;font-size:14px;letter-spacing:1.1px;text-transform:uppercase;color:#ffffff;opacity:1;font-weight:600}
+  .mrow{display:grid;grid-template-columns:16px 1fr 58px 104px 56px;align-items:center;gap:14px;padding:9px 0;font-size:15px}
+  .mrow i{width:13px;height:13px;border-radius:3px}
+  .mrow b{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+  .mrow em{font-style:normal;font-variant-numeric:tabular-nums;text-align:right;color:#ffffff}
+  .mrow s{text-decoration:none;font-variant-numeric:tabular-nums;text-align:right;color:#ffffff;font-size:14px}
+  .mbar{display:flex;height:14px;border-radius:3px;overflow:hidden;background:#161616;margin-bottom:16px}
+  .mbar i{display:block;height:100%}
+  .dayrow{display:grid;grid-template-columns:82px 1fr 54px;align-items:center;gap:14px;padding:8px 0;font-size:15px}
+  .dayrow .track{background:#161616;border-radius:3px;height:12px;position:relative;overflow:hidden}
+  .dayrow .track i{position:absolute;left:0;top:0;height:100%;background:var(--green);border-radius:3px}
+  .dayrow b{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+  .dayrow span:first-child{color:#ffffff;font-variant-numeric:tabular-nums}
+
+  /* ---------- table ---------- */
+  .panel{border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--panel)}
+  .phead{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .phead .t{font-size:15px;letter-spacing:1px;text-transform:uppercase;color:#ffffff;font-weight:600}
+  .phead .r{font-size:13px;color:rgba(255,255,255,.8)}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;min-width:1180px}
+  th{
+    text-align:left;font-size:13px;letter-spacing:1px;text-transform:uppercase;
+    color:#ffffff;font-weight:600;padding:15px 16px;border-bottom:1px solid var(--line);
+    white-space:nowrap;cursor:pointer;user-select:none;background:#070707;
+  }
+  th:hover{color:var(--ink)}
+  th.on{color:var(--green)}
+  td{padding:14px 16px;border-bottom:1px solid var(--line-soft);vertical-align:middle;white-space:nowrap;font-size:15px}
+  tbody tr:hover{background:#0f0f0f}
+  tbody tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .who{color:var(--ink);font-weight:600}
+  .who.gap{color:var(--red);font-weight:500}
+  a.lnk{color:var(--green);text-decoration:none}
+  a.lnk:hover{text-decoration:underline}
+  .mono{font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+  .dim{color:#ffffff}
+
+  /* label thumb */
+  .thumb{
+    width:40px;height:52px;border:1px solid var(--line);border-radius:3px;background:#fff;
+    object-fit:cover;object-position:top;display:block;cursor:zoom-in;
+  }
+  .thumb.miss{background:#0d0d0d;display:flex;align-items:center;justify-content:center;color:#ffffff;font-size:16px}
+
+  /* carrier chip w/ logo slot */
+  .car{display:inline-flex;align-items:center;gap:8px;padding:5px 12px 5px 5px;border-radius:4px;font-size:13.5px;font-weight:700;letter-spacing:.3px}
+  .car .mk{
+    width:24px;height:24px;border-radius:2px;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:800;background:rgba(0,0,0,.35);
+  }
+  .car img{width:24px;height:24px;object-fit:contain;border-radius:2px;background:#fff}
+  .c-express{background:rgba(255,122,26,.14);color:var(--express)}
+  .c-ground {background:rgba(169,120,255,.14);color:var(--ground)}
+  .c-dhl    {background:rgba(255,204,0,.14);color:var(--dhl)}
+  .c-usps   {background:rgba(77,144,255,.14);color:var(--usps)}
+  .c-unknown{background:rgba(255,255,255,.12);color:#ffffff}
+  .c-none   {background:rgba(239,68,68,.12);color:var(--red)}
+
+  .src{font-size:12.5px;letter-spacing:.5px;text-transform:uppercase;color:#ffffff}
+  .src.read{color:var(--green)}
+  .src.pend{color:var(--gold)}
+
+  .readbtn{
+    background:transparent;border:1px solid var(--line);color:var(--gold);border-radius:3px;
+    font:inherit;font-size:12px;letter-spacing:.6px;text-transform:uppercase;padding:6px 11px;cursor:pointer;
+  }
+  .readbtn:hover{border-color:var(--gold)}
+  .readbtn[disabled]{opacity:.45;cursor:default}
+
+  .empty{padding:56px 20px;text-align:center;color:var(--ink-dim);font-size:13px}
+
+  /* lightbox */
+  .lb{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:50;padding:28px}
+  .lb.on{display:flex}
+  .lb img{max-width:min(520px,92vw);max-height:90vh;background:#fff;border-radius:4px}
+  .lb .x{position:absolute;top:18px;right:22px;color:var(--ink-dim);font-size:24px;cursor:pointer;background:none;border:none}
+
+  .legend{margin-top:18px;border:1px solid var(--line);border-radius:5px;padding:18px 20px;color:#ffffff;font-size:14.5px;line-height:1.8;max-width:100ch}
+  .legend b{color:var(--ink)}
+  .legend .mk{display:inline-flex;width:17px;height:17px;align-items:center;justify-content:center;background:#fff;color:#000;font-weight:800;border-radius:2px;font-size:11px;vertical-align:-3px;margin:0 2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ================= header ================= -->
+  <div class="top">
+    <button class="logo" id="home" title="Back to start">
+      <img src="/logos/arena-club.png" alt="Arena Club">
+    </button>
+    <div>
+      <h1><span class="g">S</span>hip <span class="g">D</span>ashboard</h1>
+      <div class="sub"><span class="dot"></span> Orders shipped by employee, carrier and day · click a label to read its service marker</div>
+    </div>
+    <div class="meta">
+      orders <span id="m-orders">—</span> · cards <span id="m-cards">—</span> · metabase · <span class="live">live</span><br>
+      as of <span id="m-asof">—</span>
+    </div>
+  </div>
+
+  <!-- ================= tabs ================= -->
+  <div class="tabs">
+    <button class="tab on" data-view="today">Today <span class="n" id="t-today">0</span></button>
+    <button class="tab" data-view="week">This week <span class="n" id="t-week">0</span></button>
+    <button class="tab" data-view="unverified">Unverified service <span class="n" id="t-unver">0</span></button>
+    <button class="tab" data-view="notrack">No tracking <span class="n" id="t-notrk">0</span></button>
+    <button class="tab" data-view="team">Team history <span class="n" id="t-team">0</span></button>
+    <span class="push"></span>
+    <button class="btn" id="refresh">Refresh ↻</button>
+    <button class="btn" id="metabase">Open in Metabase ↗</button>
+  </div>
+
+  <!-- ================= filters ================= -->
+  <div class="filters">
+    <div class="f"><label>Start date</label><input type="date" id="f-start"></div>
+    <div class="f"><label>End date</label><input type="date" id="f-end"></div>
+    <div class="f"><label>Employee</label><select id="f-emp"><option value="">All employees</option></select></div>
+    <div class="f"><label>Order number</label><input type="text" id="f-order" placeholder="19030855"></div>
+    <div class="f"><label>Tracking number</label><input type="text" id="f-trk" placeholder="8771 0390 1782"></div>
+    <div class="f"><label>Carrier</label><select id="f-car">
+      <option value="">All carriers</option>
+      <option>FedEx Express</option>
+      <option>FedEx Ground</option>
+      <option>FedEx Home</option>
+      <option>USPS</option>
+      <option>DHL</option>
+      <option>FedEx — unverified</option>
+      <option>No tracking</option>
+    </select></div>
+    <div class="f"><label>Min cards</label><input type="number" id="f-min" placeholder="0" min="0"></div>
+    <div class="f"><label>Max cards</label><input type="number" id="f-max" placeholder="—" min="0"></div>
+  </div>
+  <div class="acts" style="margin-bottom:16px">
+    <button class="btn go" id="apply">Apply</button>
+    <button class="btn" id="clear">Clear</button>
+    <button class="btn" id="csv">Export CSV</button>
+    <button class="btn" id="readall">Read unverified labels</button>
+  </div>
+
+  <!-- ================= stats ================= -->
+  <div class="stats" id="stats"></div>
+
+  <div class="carriers" id="carriers"></div>
+
+  <!-- ================= team ================= -->
+  <div class="panel" id="teampanel" hidden>
+    <div class="phead">
+      <span class="t">Team history · <span id="tm-count">0</span> employees</span>
+      <span class="r">click a name to see their shipments and daily pace</span>
+    </div>
+    <div class="scroll">
+      <table id="teamtable">
+        <thead><tr>
+          <th data-t="who">Employee<span class="ar">▾</span></th>
+          <th data-t="orders" class="num">Orders<span class="ar">▾</span></th>
+          <th data-t="cards" class="num">Cards<span class="ar">▾</span></th>
+          <th data-t="avg" class="num">Avg / order<span class="ar">▾</span></th>
+          <th data-t="best" class="num">Best day<span class="ar">▾</span></th>
+          <th data-t="top">Carrier mix<span class="ar">▾</span></th>
+          <th data-t="last">Last shipment<span class="ar">▾</span></th>
+        </tr></thead>
+        <tbody id="teamrows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel" id="detail" hidden style="margin-top:16px">
+    <div class="phead">
+      <span class="t" id="d-name">—</span>
+      <span class="r" id="d-sum">—</span>
+    </div>
+    <div class="daily" id="d-daily"></div>
+  </div>
+
+  <!-- ================= table ================= -->
+  <div class="panel">
+    <div class="phead">
+      <span class="t">Shipments · <span id="p-count">0</span></span>
+      <span class="r">source: ship_card operation logs · one row per order</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th style="width:52px">Label</th>
+          <th data-k="who">Shipped by<span class="ar">▾</span></th>
+          <th data-k="order">Order #<span class="ar">▾</span></th>
+          <th data-k="cards" class="num">Cards<span class="ar">▾</span></th>
+          <th data-k="trk">Tracking #<span class="ar">▾</span></th>
+          <th data-k="carrier">Carrier<span class="ar">▾</span></th>
+          <th data-k="read">Service read<span class="ar">▾</span></th>
+          <th data-k="ts" class="on">Completed<span class="ar">▾</span></th>
+          <th>Links</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="empty" hidden>No shipments match these filters.</div>
+  </div>
+
+  <div class="legend">
+    <b>How the carrier is decided.</b> FedEx tracking numbers are identical for Ground and Express
+    (12 digits, 87x), so the number alone can't tell them apart. The service is read off the label's
+    marker box: <span class="mk">E</span> Express · <span class="mk">G</span> Ground ·
+    <span class="mk">H</span> Home (Ground) · USPS banner for Priority Mail.
+    Rows marked <span class="src pend">pending</span> haven't been read yet — click
+    <b>Read unverified labels</b> to resolve them, or open the thumbnail and check by eye.
+    Once Arta's <b>service_level</b> is saved to the order, this step disappears and the carrier
+    column becomes exact.
+  </div>
+</div>
+
+<div class="tip" id="tip"></div>
+<div class="modal" id="modal"><div class="mbox" id="mbox"></div></div>
+<div class="lb" id="lb"><button class="x" id="lbx">✕</button><img id="lbimg" alt="Shipping label"></div>
+
+<script>
+/* ============================================================
+   DATA LAYER
+   Swap SAMPLE for the Metabase card result. In the Vercel app:
+
+     const res  = await fetch('/api/shipments?start=…&end=…');
+     const rows = await res.json();
+
+   The API route posts to
+     POST {METABASE_URL}/api/card/{CARD_ID}/query/json
+     header: x-api-key: {METABASE_API_KEY}
+   and maps the columns to the field names used below.
+   ============================================================ */
+
+const CARRIER_LOGOS = {
+  "FedEx Express":      "/logos/fedex-express.png",
+  "FedEx Ground":       "/logos/fedex-ground.png",
+  "FedEx Home":         "/logos/fedex-ground.png",
+  "USPS":               "/logos/usps.png",
+  "DHL":                "/logos/dhl.png",
+  "FedEx — unverified": null,
+  "No tracking":        null,
+  "Unknown — check":    null
+};
+
+const MARKER = { "FedEx Express":"E", "FedEx Ground":"G", "FedEx Home":"H", "USPS":"US", "DHL":"D" };
+const CLS = {
+  "FedEx Express":"c-express","FedEx Ground":"c-ground","FedEx Home":"c-ground",
+  "USPS":"c-usps","DHL":"c-dhl","FedEx — unverified":"c-unknown","No tracking":"c-none","Unknown — check":"c-none"
+};
+
+
+const SAMPLE = [
+  {who:"Arman Abonitalla",order:"19014942",cards:122,trk:"877175248151",carrier:"FedEx Express",read:"label",ts:"2026-09-14T09:34:00",label:1},
+  {who:"James Beaton",    order:"18996984",cards:4,  trk:"877176813296",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T09:33:00",label:1},
+  {who:"Steven Ramirez",  order:"19045934",cards:8,  trk:"877176794367",carrier:"FedEx Ground",read:"label",ts:"2026-09-14T09:33:00",label:1},
+  {who:"Steven Ramirez",  order:"19044014",cards:4,  trk:"877176674215",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T09:31:00",label:1},
+  {who:"James Beaton",    order:"19055028",cards:9,  trk:"877176526931",carrier:"FedEx Express",read:"label",ts:"2026-09-14T09:31:00",label:1},
+  {who:"Steven Ramirez",  order:"19044304",cards:2,  trk:"877176566133",carrier:"FedEx Home",read:"label",ts:"2026-09-14T09:30:00",label:1},
+  {who:"Steven Ramirez",  order:"19046241",cards:1,  trk:"877176492517",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T09:29:00",label:1},
+  {who:"Steven Ramirez",  order:"19046268",cards:1,  trk:"877176422430",carrier:"FedEx Express",read:"label",ts:"2026-09-14T09:28:00",label:1},
+  {who:"James Beaton",    order:"19052265",cards:12, trk:"877176191692",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T09:27:00",label:1},
+  {who:"Steven Ramirez",  order:"19046278",cards:1,  trk:"877176365430",carrier:"FedEx Ground",read:"label",ts:"2026-09-14T09:27:00",label:1},
+  {who:"Steven Ramirez",  order:"19059049",cards:1,  trk:"877176291938",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T09:26:00",label:1},
+  {who:"Steven Ramirez",  order:"19059181",cards:3,  trk:"93346208455000388906",carrier:"USPS",read:"label",ts:"2026-09-14T09:25:00",label:1},
+  {who:"Steven Ramirez",  order:"18977312",cards:3,  trk:"877176090546",carrier:"FedEx Express",read:"label",ts:"2026-09-14T09:24:00",label:1},
+  {who:"James Beaton",    order:"19053059",cards:8,  trk:"877175923087",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T09:23:00",label:1},
+  {who:"Steven Ramirez",  order:"19058933",cards:1,  trk:"877175984858",carrier:"FedEx Express",read:"label",ts:"2026-09-14T09:23:00",label:1},
+  {who:"Steven Ramirez",  order:"18976946",cards:6,  trk:"93346208455000388812",carrier:"USPS",read:"label",ts:"2026-09-14T09:21:00",label:1},
+  {who:"Steven Ramirez",  order:"18966292",cards:1,  trk:"877175738691",carrier:"FedEx Home",read:"label",ts:"2026-09-14T09:20:00",label:1},
+  {who:"Joey Abelsen",    order:"19030855",cards:3,  trk:"877102376034",carrier:"FedEx Express",read:"label",ts:"2026-09-11T15:47:00",label:1},
+  {who:"Jimi Kim",        order:"18435665",cards:1,  trk:"877103901782",carrier:"FedEx Express",read:"label",ts:"2026-09-11T15:31:00",label:1},
+  {who:"Ricky Barnett",   order:"16544352",cards:58, trk:"877082076236",carrier:"FedEx Ground",read:"label",ts:"2026-09-11T12:18:00",label:1},
+  {who:"Jake Hull",       order:"17614186",cards:26, trk:"",            carrier:"No tracking",read:"",ts:"2026-09-11T13:58:00",label:0},
+  {who:"Luis Bohorquez",  order:"16945751",cards:56, trk:"93701208455000030850 6".replace(/\s/g,""),carrier:"USPS",read:"label",ts:"2026-09-11T13:40:00",label:1},
+  {who:"Davis Umann",     order:"17604211",cards:41, trk:"JJD0002270984317",carrier:"DHL",read:"label",ts:"2026-09-11T10:47:00",label:1},
+  {who:"Unmapped user 15c43202…",order:"15974856",cards:1,trk:"",carrier:"No tracking",read:"",ts:"2026-09-11T12:18:00",label:0,gap:true},
+  {who:"James Beaton",order:"18902966",cards:1,trk:"877675398922",carrier:"FedEx Ground",read:"label",ts:"2026-08-24T09:52:00",label:1},
+  {who:"Steven Ramirez",order:"18905653",cards:1,trk:"877140260662",carrier:"FedEx Ground",read:"label",ts:"2026-08-24T16:13:00",label:1},
+  {who:"Steven Ramirez",order:"18907665",cards:1,trk:"877691682483",carrier:"FedEx Ground",read:"label",ts:"2026-08-24T11:05:00",label:1},
+  {who:"Davis Umann",order:"18911351",cards:1,trk:"877773701293",carrier:"FedEx Express",read:"label",ts:"2026-08-24T11:40:00",label:1},
+  {who:"Ricky Barnett",order:"18914014",cards:12,trk:"877150017772",carrier:"FedEx Express",read:"label",ts:"2026-08-24T08:14:00",label:1},
+  {who:"Luis Bohorquez",order:"18914859",cards:6,trk:"",carrier:"No tracking",read:"",ts:"2026-08-24T14:09:00",label:0},
+  {who:"Luis Bohorquez",order:"18917497",cards:6,trk:"877832294821",carrier:"FedEx Express",read:"label",ts:"2026-08-24T16:52:00",label:1},
+  {who:"James Beaton",order:"18920179",cards:3,trk:"877688136138",carrier:"FedEx Express",read:"label",ts:"2026-08-24T13:06:00",label:1},
+  {who:"Steven Ramirez",order:"18920723",cards:3,trk:"877670930264",carrier:"FedEx Home",read:"label",ts:"2026-08-24T15:43:00",label:1},
+  {who:"Davis Umann",order:"18922309",cards:26,trk:"877586603020",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-24T17:59:00",label:1},
+  {who:"Joey Abelsen",order:"18923626",cards:2,trk:"877716782763",carrier:"FedEx Express",read:"label",ts:"2026-08-24T11:05:00",label:1},
+  {who:"Jake Hull",order:"18927510",cards:8,trk:"877753864767",carrier:"FedEx Ground",read:"label",ts:"2026-08-25T15:18:00",label:1},
+  {who:"Steven Ramirez",order:"18929906",cards:22,trk:"877467279627",carrier:"FedEx Express",read:"label",ts:"2026-08-25T10:48:00",label:1},
+  {who:"James Beaton",order:"18931933",cards:1,trk:"877699229278",carrier:"FedEx Ground",read:"label",ts:"2026-08-25T09:48:00",label:1},
+  {who:"Ricky Barnett",order:"18935818",cards:8,trk:"877476001182",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-25T13:44:00",label:1},
+  {who:"Jake Hull",order:"18939382",cards:26,trk:"877200497933",carrier:"FedEx Home",read:"label",ts:"2026-08-25T09:53:00",label:1},
+  {who:"Arman Abonitalla",order:"18942537",cards:1,trk:"877853221325",carrier:"FedEx Ground",read:"label",ts:"2026-08-25T08:46:00",label:1},
+  {who:"Arman Abonitalla",order:"18945204",cards:26,trk:"93346208455007472506",carrier:"USPS",read:"label",ts:"2026-08-25T12:45:00",label:1},
+  {who:"Joey Abelsen",order:"18949356",cards:26,trk:"877755969870",carrier:"FedEx Express",read:"label",ts:"2026-08-25T13:10:00",label:1},
+  {who:"Steven Ramirez",order:"18949897",cards:3,trk:"877892811641",carrier:"FedEx Ground",read:"label",ts:"2026-08-25T12:08:00",label:1},
+  {who:"Arman Abonitalla",order:"18951798",cards:41,trk:"877582311296",carrier:"FedEx Ground",read:"label",ts:"2026-08-25T09:10:00",label:1},
+  {who:"Luis Bohorquez",order:"18955716",cards:2,trk:"877690793751",carrier:"FedEx Express",read:"label",ts:"2026-08-26T14:55:00",label:1},
+  {who:"Arman Abonitalla",order:"18957717",cards:9,trk:"JJD0002270983472",carrier:"DHL",read:"label",ts:"2026-08-26T14:14:00",label:1},
+  {who:"Steven Ramirez",order:"18958636",cards:4,trk:"877620724767",carrier:"FedEx Express",read:"label",ts:"2026-08-26T11:00:00",label:1},
+  {who:"Ricky Barnett",order:"18960012",cards:6,trk:"877549840379",carrier:"FedEx Express",read:"label",ts:"2026-08-26T08:09:00",label:1},
+  {who:"Luis Bohorquez",order:"18962809",cards:8,trk:"877653504709",carrier:"FedEx Ground",read:"label",ts:"2026-08-26T10:44:00",label:1},
+  {who:"Steven Ramirez",order:"18966793",cards:122,trk:"877528400257",carrier:"FedEx Ground",read:"label",ts:"2026-08-26T14:25:00",label:1},
+  {who:"Jimi Kim",order:"18969065",cards:12,trk:"877172313951",carrier:"FedEx Express",read:"label",ts:"2026-08-26T08:12:00",label:1},
+  {who:"James Beaton",order:"18970029",cards:1,trk:"877156452631",carrier:"FedEx Ground",read:"label",ts:"2026-08-26T13:38:00",label:1},
+  {who:"Steven Ramirez",order:"18972650",cards:2,trk:"877490423179",carrier:"FedEx Express",read:"label",ts:"2026-08-26T16:06:00",label:1},
+  {who:"Steven Ramirez",order:"18976531",cards:3,trk:"877259504871",carrier:"FedEx Express",read:"label",ts:"2026-08-26T17:24:00",label:1},
+  {who:"Arman Abonitalla",order:"18979297",cards:9,trk:"877223859888",carrier:"FedEx Ground",read:"label",ts:"2026-08-26T15:07:00",label:1},
+  {who:"Jake Hull",order:"18981564",cards:41,trk:"877254744982",carrier:"FedEx Ground",read:"label",ts:"2026-08-26T12:05:00",label:1},
+  {who:"Joey Abelsen",order:"18982948",cards:41,trk:"877124798844",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-27T10:33:00",label:1},
+  {who:"James Beaton",order:"18984729",cards:2,trk:"877129036651",carrier:"FedEx Home",read:"label",ts:"2026-08-27T16:58:00",label:1},
+  {who:"Jake Hull",order:"18987662",cards:1,trk:"877493740901",carrier:"FedEx Express",read:"label",ts:"2026-08-27T12:33:00",label:1},
+  {who:"James Beaton",order:"18991123",cards:4,trk:"877936503816",carrier:"FedEx Ground",read:"label",ts:"2026-08-27T16:34:00",label:1},
+  {who:"Jake Hull",order:"18994029",cards:4,trk:"877946537260",carrier:"FedEx Express",read:"label",ts:"2026-08-27T17:51:00",label:1},
+  {who:"James Beaton",order:"18995309",cards:12,trk:"877655810350",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-27T11:12:00",label:1},
+  {who:"Jake Hull",order:"18998603",cards:1,trk:"877400023374",carrier:"FedEx Ground",read:"label",ts:"2026-08-27T08:50:00",label:1},
+  {who:"Arman Abonitalla",order:"19001739",cards:9,trk:"877876452729",carrier:"FedEx Express",read:"label",ts:"2026-08-28T15:51:00",label:1},
+  {who:"Joey Abelsen",order:"19002368",cards:4,trk:"877604744541",carrier:"FedEx Ground",read:"label",ts:"2026-08-28T09:14:00",label:1},
+  {who:"James Beaton",order:"19003505",cards:41,trk:"877755263987",carrier:"FedEx Express",read:"label",ts:"2026-08-28T17:57:00",label:1},
+  {who:"Steven Ramirez",order:"19007529",cards:9,trk:"877809298446",carrier:"FedEx Ground",read:"label",ts:"2026-08-28T09:53:00",label:1},
+  {who:"Steven Ramirez",order:"19011033",cards:3,trk:"877291686239",carrier:"FedEx Ground",read:"label",ts:"2026-08-28T15:56:00",label:1},
+  {who:"Davis Umann",order:"19013937",cards:8,trk:"877875053406",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-28T09:51:00",label:1},
+  {who:"Jimi Kim",order:"19015881",cards:1,trk:"877236406413",carrier:"FedEx Ground",read:"label",ts:"2026-08-28T10:10:00",label:1},
+  {who:"Steven Ramirez",order:"19018600",cards:26,trk:"877987458869",carrier:"FedEx Express",read:"label",ts:"2026-08-28T10:39:00",label:1},
+  {who:"Davis Umann",order:"19022739",cards:9,trk:"93346208455003197544",carrier:"USPS",read:"label",ts:"2026-08-28T10:35:00",label:1},
+  {who:"Steven Ramirez",order:"19026313",cards:1,trk:"877249519330",carrier:"FedEx Express",read:"label",ts:"2026-08-28T16:47:00",label:1},
+  {who:"Davis Umann",order:"19027410",cards:3,trk:"",carrier:"No tracking",read:"",ts:"2026-08-28T08:16:00",label:0},
+  {who:"James Beaton",order:"19029762",cards:4,trk:"877378490828",carrier:"FedEx Express",read:"label",ts:"2026-08-28T17:20:00",label:1},
+  {who:"Luis Bohorquez",order:"19033478",cards:2,trk:"877894485254",carrier:"FedEx Ground",read:"label",ts:"2026-08-28T08:58:00",label:1},
+  {who:"Davis Umann",order:"19036167",cards:58,trk:"93346208455009416272",carrier:"USPS",read:"label",ts:"2026-08-29T14:52:00",label:1},
+  {who:"Steven Ramirez",order:"19037088",cards:58,trk:"877572580523",carrier:"FedEx Home",read:"label",ts:"2026-08-29T16:01:00",label:1},
+  {who:"James Beaton",order:"19037404",cards:2,trk:"93346208455008943893",carrier:"USPS",read:"label",ts:"2026-08-29T10:09:00",label:1},
+  {who:"Steven Ramirez",order:"19037956",cards:8,trk:"877696401168",carrier:"FedEx Home",read:"label",ts:"2026-08-29T16:33:00",label:1},
+  {who:"Davis Umann",order:"19041436",cards:1,trk:"877366818750",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-29T16:03:00",label:1},
+  {who:"James Beaton",order:"19041908",cards:1,trk:"877703152336",carrier:"FedEx Express",read:"label",ts:"2026-08-29T16:28:00",label:1},
+  {who:"Steven Ramirez",order:"19045869",cards:1,trk:"877757696806",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-29T15:20:00",label:1},
+  {who:"Jake Hull",order:"19048266",cards:3,trk:"93346208455009525445",carrier:"USPS",read:"label",ts:"2026-08-29T12:28:00",label:1},
+  {who:"Luis Bohorquez",order:"19050524",cards:58,trk:"877661792086",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-29T11:44:00",label:1},
+  {who:"Arman Abonitalla",order:"19054480",cards:3,trk:"877547360632",carrier:"FedEx Home",read:"label",ts:"2026-08-29T15:08:00",label:1},
+  {who:"Steven Ramirez",order:"19056590",cards:8,trk:"877358383902",carrier:"FedEx Ground",read:"label",ts:"2026-08-29T09:42:00",label:1},
+  {who:"Steven Ramirez",order:"19059632",cards:6,trk:"877934225020",carrier:"FedEx Express",read:"label",ts:"2026-08-31T09:57:00",label:1},
+  {who:"James Beaton",order:"19062567",cards:9,trk:"JJD0002270983248",carrier:"DHL",read:"label",ts:"2026-08-31T10:16:00",label:1},
+  {who:"Davis Umann",order:"19065925",cards:1,trk:"877623192278",carrier:"FedEx Express",read:"label",ts:"2026-08-31T14:56:00",label:1},
+  {who:"James Beaton",order:"19069634",cards:4,trk:"93346208455008239734",carrier:"USPS",read:"label",ts:"2026-08-31T10:45:00",label:1},
+  {who:"Jake Hull",order:"19071323",cards:22,trk:"877442014228",carrier:"FedEx Ground",read:"label",ts:"2026-08-31T11:22:00",label:1},
+  {who:"Steven Ramirez",order:"19073121",cards:1,trk:"877592493986",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-31T13:35:00",label:1},
+  {who:"Davis Umann",order:"19073495",cards:12,trk:"JJD0002270985840",carrier:"DHL",read:"label",ts:"2026-08-31T13:33:00",label:1},
+  {who:"Jake Hull",order:"19074257",cards:4,trk:"877385147465",carrier:"FedEx Express",read:"label",ts:"2026-08-31T09:05:00",label:1},
+  {who:"Arman Abonitalla",order:"19078267",cards:2,trk:"877239109222",carrier:"FedEx Express",read:"label",ts:"2026-08-31T12:48:00",label:1},
+  {who:"Davis Umann",order:"19082300",cards:5,trk:"",carrier:"No tracking",read:"",ts:"2026-08-31T14:09:00",label:0},
+  {who:"Luis Bohorquez",order:"19084937",cards:41,trk:"877399640865",carrier:"FedEx Home",read:"label",ts:"2026-08-31T13:05:00",label:1},
+  {who:"Steven Ramirez",order:"19088055",cards:2,trk:"877177754046",carrier:"FedEx — unverified",read:"pending",ts:"2026-08-31T14:57:00",label:1},
+  {who:"Steven Ramirez",order:"19088717",cards:5,trk:"93346208455004731386",carrier:"USPS",read:"label",ts:"2026-09-01T09:38:00",label:1},
+  {who:"Steven Ramirez",order:"19092550",cards:1,trk:"877464161443",carrier:"FedEx Express",read:"label",ts:"2026-09-01T15:00:00",label:1},
+  {who:"Luis Bohorquez",order:"19096645",cards:5,trk:"877146391758",carrier:"FedEx Ground",read:"label",ts:"2026-09-01T17:08:00",label:1},
+  {who:"Jake Hull",order:"19097921",cards:1,trk:"JJD0002270981825",carrier:"DHL",read:"label",ts:"2026-09-01T10:16:00",label:1},
+  {who:"James Beaton",order:"19102039",cards:6,trk:"877915505040",carrier:"FedEx Express",read:"label",ts:"2026-09-01T12:33:00",label:1},
+  {who:"James Beaton",order:"19104164",cards:58,trk:"877472589510",carrier:"FedEx Express",read:"label",ts:"2026-09-01T10:17:00",label:1},
+  {who:"Steven Ramirez",order:"19104615",cards:1,trk:"877642941825",carrier:"FedEx Express",read:"label",ts:"2026-09-01T08:46:00",label:1},
+  {who:"Luis Bohorquez",order:"19107021",cards:41,trk:"877580022247",carrier:"FedEx Express",read:"label",ts:"2026-09-01T11:59:00",label:1},
+  {who:"Steven Ramirez",order:"19110675",cards:22,trk:"93346208455007594889",carrier:"USPS",read:"label",ts:"2026-09-01T15:34:00",label:1},
+  {who:"Jake Hull",order:"19113791",cards:3,trk:"877313271411",carrier:"FedEx Express",read:"label",ts:"2026-09-01T11:21:00",label:1},
+  {who:"Steven Ramirez",order:"19115514",cards:1,trk:"877175938041",carrier:"FedEx Ground",read:"label",ts:"2026-09-02T10:00:00",label:1},
+  {who:"Arman Abonitalla",order:"19116482",cards:1,trk:"877508968703",carrier:"FedEx Ground",read:"label",ts:"2026-09-02T09:42:00",label:1},
+  {who:"Jake Hull",order:"19117936",cards:4,trk:"93346208455008708341",carrier:"USPS",read:"label",ts:"2026-09-02T12:02:00",label:1},
+  {who:"James Beaton",order:"19119337",cards:26,trk:"877490993793",carrier:"FedEx Express",read:"label",ts:"2026-09-02T08:16:00",label:1},
+  {who:"Joey Abelsen",order:"19120962",cards:4,trk:"877432374551",carrier:"FedEx Home",read:"label",ts:"2026-09-02T08:56:00",label:1},
+  {who:"James Beaton",order:"19122011",cards:1,trk:"877190076802",carrier:"FedEx Ground",read:"label",ts:"2026-09-02T13:24:00",label:1},
+  {who:"Davis Umann",order:"19124370",cards:3,trk:"877933479291",carrier:"FedEx Express",read:"label",ts:"2026-09-02T11:32:00",label:1},
+  {who:"Steven Ramirez",order:"19125752",cards:1,trk:"877730072489",carrier:"FedEx Express",read:"label",ts:"2026-09-02T10:25:00",label:1},
+  {who:"Steven Ramirez",order:"19126144",cards:6,trk:"877349977372",carrier:"FedEx Ground",read:"label",ts:"2026-09-02T12:40:00",label:1},
+  {who:"Steven Ramirez",order:"19128611",cards:2,trk:"877920673058",carrier:"FedEx Home",read:"label",ts:"2026-09-02T17:24:00",label:1},
+  {who:"Joey Abelsen",order:"19130935",cards:2,trk:"877764331765",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-02T12:46:00",label:1},
+  {who:"James Beaton",order:"19134613",cards:58,trk:"877852750239",carrier:"FedEx Express",read:"label",ts:"2026-09-02T14:46:00",label:1},
+  {who:"Jake Hull",order:"19138639",cards:58,trk:"877996507414",carrier:"FedEx Express",read:"label",ts:"2026-09-02T16:36:00",label:1},
+  {who:"Steven Ramirez",order:"19141750",cards:4,trk:"877144949090",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-02T09:01:00",label:1},
+  {who:"Steven Ramirez",order:"19143527",cards:1,trk:"93346208455008573003",carrier:"USPS",read:"label",ts:"2026-09-02T14:53:00",label:1},
+  {who:"Luis Bohorquez",order:"19146398",cards:1,trk:"877362593955",carrier:"FedEx Express",read:"label",ts:"2026-09-02T16:43:00",label:1},
+  {who:"Jake Hull",order:"19146711",cards:26,trk:"877640061052",carrier:"FedEx Express",read:"label",ts:"2026-09-02T09:47:00",label:1},
+  {who:"Steven Ramirez",order:"19149165",cards:1,trk:"93346208455002249063",carrier:"USPS",read:"label",ts:"2026-09-03T15:16:00",label:1},
+  {who:"Arman Abonitalla",order:"19152452",cards:3,trk:"877797859467",carrier:"FedEx Express",read:"label",ts:"2026-09-03T11:47:00",label:1},
+  {who:"Davis Umann",order:"19156215",cards:12,trk:"877834113597",carrier:"FedEx Ground",read:"label",ts:"2026-09-03T09:30:00",label:1},
+  {who:"Arman Abonitalla",order:"19156706",cards:3,trk:"877258296470",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-03T09:38:00",label:1},
+  {who:"Joey Abelsen",order:"19159674",cards:6,trk:"877243281195",carrier:"FedEx Express",read:"label",ts:"2026-09-03T17:36:00",label:1},
+  {who:"Steven Ramirez",order:"19160222",cards:41,trk:"877206857784",carrier:"FedEx Ground",read:"label",ts:"2026-09-03T12:43:00",label:1},
+  {who:"James Beaton",order:"19162527",cards:6,trk:"93346208455008795749",carrier:"USPS",read:"label",ts:"2026-09-03T16:18:00",label:1},
+  {who:"Davis Umann",order:"19165969",cards:1,trk:"877434658118",carrier:"FedEx Ground",read:"label",ts:"2026-09-03T16:12:00",label:1},
+  {who:"Steven Ramirez",order:"19166340",cards:6,trk:"877980358440",carrier:"FedEx Ground",read:"label",ts:"2026-09-03T15:04:00",label:1},
+  {who:"Jake Hull",order:"19167740",cards:12,trk:"877326246848",carrier:"FedEx Ground",read:"label",ts:"2026-09-03T11:58:00",label:1},
+  {who:"Steven Ramirez",order:"19168409",cards:2,trk:"877486067715",carrier:"FedEx Home",read:"label",ts:"2026-09-03T16:16:00",label:1},
+  {who:"Steven Ramirez",order:"19172068",cards:58,trk:"93346208455002890415",carrier:"USPS",read:"label",ts:"2026-09-03T12:56:00",label:1},
+  {who:"Joey Abelsen",order:"19174407",cards:41,trk:"877270795036",carrier:"FedEx Express",read:"label",ts:"2026-09-03T14:01:00",label:1},
+  {who:"Steven Ramirez",order:"19177498",cards:26,trk:"877880806558",carrier:"FedEx Ground",read:"label",ts:"2026-09-03T14:19:00",label:1},
+  {who:"Jimi Kim",order:"19179338",cards:8,trk:"877455756826",carrier:"FedEx Ground",read:"label",ts:"2026-09-04T09:53:00",label:1},
+  {who:"Steven Ramirez",order:"19182713",cards:8,trk:"877310175441",carrier:"FedEx Express",read:"label",ts:"2026-09-04T14:07:00",label:1},
+  {who:"Steven Ramirez",order:"19184200",cards:5,trk:"877521872496",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-04T13:04:00",label:1},
+  {who:"Jimi Kim",order:"19186913",cards:1,trk:"",carrier:"No tracking",read:"",ts:"2026-09-04T13:59:00",label:0},
+  {who:"Davis Umann",order:"19188340",cards:1,trk:"877155423883",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-04T12:06:00",label:1},
+  {who:"Arman Abonitalla",order:"19192472",cards:2,trk:"93346208455008318905",carrier:"USPS",read:"label",ts:"2026-09-04T11:17:00",label:1},
+  {who:"Jake Hull",order:"19193549",cards:9,trk:"877131150658",carrier:"FedEx Express",read:"label",ts:"2026-09-04T14:56:00",label:1},
+  {who:"Jimi Kim",order:"19196098",cards:3,trk:"877886357475",carrier:"FedEx Home",read:"label",ts:"2026-09-04T09:03:00",label:1},
+  {who:"Davis Umann",order:"19199480",cards:2,trk:"93346208455001821696",carrier:"USPS",read:"label",ts:"2026-09-05T12:31:00",label:1},
+  {who:"Luis Bohorquez",order:"19200479",cards:41,trk:"877402522508",carrier:"FedEx Express",read:"label",ts:"2026-09-05T14:21:00",label:1},
+  {who:"Arman Abonitalla",order:"19203806",cards:5,trk:"877356264619",carrier:"FedEx Express",read:"label",ts:"2026-09-05T14:41:00",label:1},
+  {who:"Arman Abonitalla",order:"19206388",cards:12,trk:"877790636148",carrier:"FedEx Ground",read:"label",ts:"2026-09-05T09:10:00",label:1},
+  {who:"James Beaton",order:"19207539",cards:58,trk:"877336250319",carrier:"FedEx Express",read:"label",ts:"2026-09-05T15:35:00",label:1},
+  {who:"Davis Umann",order:"19210948",cards:26,trk:"877688179990",carrier:"FedEx Express",read:"label",ts:"2026-09-05T14:08:00",label:1},
+  {who:"James Beaton",order:"19211619",cards:2,trk:"877197811806",carrier:"FedEx Express",read:"label",ts:"2026-09-05T13:35:00",label:1},
+  {who:"Joey Abelsen",order:"19213427",cards:5,trk:"877121562591",carrier:"FedEx Express",read:"label",ts:"2026-09-05T17:12:00",label:1},
+  {who:"Jimi Kim",order:"19215422",cards:58,trk:"877390167827",carrier:"FedEx Ground",read:"label",ts:"2026-09-05T11:24:00",label:1},
+  {who:"Joey Abelsen",order:"19215976",cards:41,trk:"877486703003",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-05T12:36:00",label:1},
+  {who:"Steven Ramirez",order:"19218337",cards:58,trk:"93346208455005546975",carrier:"USPS",read:"label",ts:"2026-09-05T11:05:00",label:1},
+  {who:"Arman Abonitalla",order:"19220274",cards:26,trk:"877974389805",carrier:"FedEx Ground",read:"label",ts:"2026-09-05T14:19:00",label:1},
+  {who:"Steven Ramirez",order:"19222315",cards:41,trk:"877100191870",carrier:"FedEx Express",read:"label",ts:"2026-09-07T17:31:00",label:1},
+  {who:"Steven Ramirez",order:"19226425",cards:58,trk:"877366787564",carrier:"FedEx Ground",read:"label",ts:"2026-09-07T15:28:00",label:1},
+  {who:"Steven Ramirez",order:"19227357",cards:2,trk:"877216920188",carrier:"FedEx Express",read:"label",ts:"2026-09-07T16:43:00",label:1},
+  {who:"Davis Umann",order:"19229915",cards:1,trk:"877234917566",carrier:"FedEx Express",read:"label",ts:"2026-09-07T08:50:00",label:1},
+  {who:"James Beaton",order:"19233982",cards:1,trk:"877772669979",carrier:"FedEx Home",read:"label",ts:"2026-09-07T12:08:00",label:1},
+  {who:"Arman Abonitalla",order:"19236888",cards:22,trk:"877175539787",carrier:"FedEx Home",read:"label",ts:"2026-09-07T09:06:00",label:1},
+  {who:"Jake Hull",order:"19237973",cards:12,trk:"877948779167",carrier:"FedEx Home",read:"label",ts:"2026-09-08T12:14:00",label:1},
+  {who:"Steven Ramirez",order:"19240474",cards:6,trk:"877439685769",carrier:"FedEx Express",read:"label",ts:"2026-09-08T15:17:00",label:1},
+  {who:"Arman Abonitalla",order:"19242929",cards:4,trk:"877131440074",carrier:"FedEx Ground",read:"label",ts:"2026-09-08T16:15:00",label:1},
+  {who:"Jimi Kim",order:"19245889",cards:6,trk:"JJD0002270984180",carrier:"DHL",read:"label",ts:"2026-09-08T08:01:00",label:1},
+  {who:"Jake Hull",order:"19248839",cards:22,trk:"93346208455004822529",carrier:"USPS",read:"label",ts:"2026-09-08T09:16:00",label:1},
+  {who:"Davis Umann",order:"19250067",cards:41,trk:"877462980106",carrier:"FedEx Ground",read:"label",ts:"2026-09-08T08:44:00",label:1},
+  {who:"Jimi Kim",order:"19253162",cards:12,trk:"877955841184",carrier:"FedEx Ground",read:"label",ts:"2026-09-08T11:00:00",label:1},
+  {who:"Arman Abonitalla",order:"19256923",cards:58,trk:"877632249109",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-08T09:13:00",label:1},
+  {who:"James Beaton",order:"19260359",cards:3,trk:"877337772408",carrier:"FedEx Express",read:"label",ts:"2026-09-08T11:29:00",label:1},
+  {who:"Arman Abonitalla",order:"19264301",cards:6,trk:"877632323320",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-08T09:39:00",label:1},
+  {who:"James Beaton",order:"19266587",cards:22,trk:"877257177606",carrier:"FedEx Express",read:"label",ts:"2026-09-09T08:38:00",label:1},
+  {who:"Jimi Kim",order:"19267759",cards:1,trk:"877546016176",carrier:"FedEx Express",read:"label",ts:"2026-09-09T17:09:00",label:1},
+  {who:"Steven Ramirez",order:"19268305",cards:2,trk:"JJD0002270986147",carrier:"DHL",read:"label",ts:"2026-09-09T14:28:00",label:1},
+  {who:"Steven Ramirez",order:"19272420",cards:2,trk:"877299192194",carrier:"FedEx Express",read:"label",ts:"2026-09-09T13:12:00",label:1},
+  {who:"Jake Hull",order:"19274635",cards:1,trk:"877878867960",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T12:42:00",label:1},
+  {who:"Jimi Kim",order:"19276466",cards:8,trk:"877216992374",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T15:10:00",label:1},
+  {who:"Steven Ramirez",order:"19277912",cards:1,trk:"877232830753",carrier:"FedEx Express",read:"label",ts:"2026-09-09T13:26:00",label:1},
+  {who:"Luis Bohorquez",order:"19279061",cards:12,trk:"877982157957",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T13:49:00",label:1},
+  {who:"Arman Abonitalla",order:"19282653",cards:22,trk:"877857263389",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T09:03:00",label:1},
+  {who:"Davis Umann",order:"19284479",cards:122,trk:"877447150598",carrier:"FedEx Express",read:"label",ts:"2026-09-09T15:12:00",label:1},
+  {who:"Joey Abelsen",order:"19288453",cards:41,trk:"877541095107",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T08:40:00",label:1},
+  {who:"Arman Abonitalla",order:"19291314",cards:12,trk:"877137424614",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T08:24:00",label:1},
+  {who:"Davis Umann",order:"19294904",cards:1,trk:"877902393099",carrier:"FedEx Express",read:"label",ts:"2026-09-09T12:12:00",label:1},
+  {who:"Steven Ramirez",order:"19296592",cards:9,trk:"93346208455001731244",carrier:"USPS",read:"label",ts:"2026-09-09T12:21:00",label:1},
+  {who:"Arman Abonitalla",order:"19299827",cards:8,trk:"877104049743",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-09T12:19:00",label:1},
+  {who:"Steven Ramirez",order:"19303510",cards:4,trk:"877868338706",carrier:"FedEx Express",read:"label",ts:"2026-09-10T09:30:00",label:1},
+  {who:"Davis Umann",order:"19305393",cards:5,trk:"877629863509",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-10T14:52:00",label:1},
+  {who:"Steven Ramirez",order:"19306442",cards:1,trk:"877843147384",carrier:"FedEx Ground",read:"label",ts:"2026-09-10T12:52:00",label:1},
+  {who:"James Beaton",order:"19307709",cards:8,trk:"93346208455007070977",carrier:"USPS",read:"label",ts:"2026-09-10T13:29:00",label:1},
+  {who:"Steven Ramirez",order:"19308817",cards:12,trk:"877537825502",carrier:"FedEx Home",read:"label",ts:"2026-09-10T10:15:00",label:1},
+  {who:"Steven Ramirez",order:"19309255",cards:41,trk:"93346208455006465318",carrier:"USPS",read:"label",ts:"2026-09-10T16:34:00",label:1},
+  {who:"James Beaton",order:"19313173",cards:1,trk:"877770660838",carrier:"FedEx Ground",read:"label",ts:"2026-09-10T09:16:00",label:1},
+  {who:"Steven Ramirez",order:"19313867",cards:22,trk:"877579922981",carrier:"FedEx Express",read:"label",ts:"2026-09-10T15:45:00",label:1},
+  {who:"James Beaton",order:"19314711",cards:22,trk:"877823818620",carrier:"FedEx Express",read:"label",ts:"2026-09-10T15:39:00",label:1},
+  {who:"Arman Abonitalla",order:"19317216",cards:1,trk:"877400000146",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-10T12:18:00",label:1},
+  {who:"Ricky Barnett",order:"19319043",cards:5,trk:"877571799759",carrier:"FedEx Express",read:"label",ts:"2026-09-10T12:12:00",label:1},
+  {who:"Arman Abonitalla",order:"19320347",cards:4,trk:"877720924237",carrier:"FedEx Express",read:"label",ts:"2026-09-10T10:18:00",label:1},
+  {who:"James Beaton",order:"19320912",cards:12,trk:"877644735550",carrier:"FedEx Express",read:"label",ts:"2026-09-10T12:15:00",label:1},
+  {who:"Jake Hull",order:"19323872",cards:1,trk:"877209878605",carrier:"FedEx Express",read:"label",ts:"2026-09-10T15:02:00",label:1},
+  {who:"Steven Ramirez",order:"19327788",cards:4,trk:"877501446613",carrier:"FedEx Ground",read:"label",ts:"2026-09-10T15:58:00",label:1},
+  {who:"Steven Ramirez",order:"19329041",cards:1,trk:"877744774777",carrier:"FedEx Express",read:"label",ts:"2026-09-10T08:12:00",label:1},
+  {who:"Ricky Barnett",order:"19333150",cards:1,trk:"877290867278",carrier:"FedEx Express",read:"label",ts:"2026-09-10T13:32:00",label:1},
+  {who:"Arman Abonitalla",order:"19336635",cards:1,trk:"877740108039",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-11T09:40:00",label:1},
+  {who:"Joey Abelsen",order:"19337088",cards:9,trk:"877147423455",carrier:"FedEx Express",read:"label",ts:"2026-09-11T13:09:00",label:1},
+  {who:"James Beaton",order:"19337544",cards:3,trk:"877451381186",carrier:"FedEx Express",read:"label",ts:"2026-09-11T08:52:00",label:1},
+  {who:"Jimi Kim",order:"19339366",cards:2,trk:"93346208455002307528",carrier:"USPS",read:"label",ts:"2026-09-11T17:19:00",label:1},
+  {who:"James Beaton",order:"19342923",cards:41,trk:"877167936803",carrier:"FedEx Express",read:"label",ts:"2026-09-11T16:30:00",label:1},
+  {who:"Jimi Kim",order:"19346482",cards:12,trk:"877786316388",carrier:"FedEx Express",read:"label",ts:"2026-09-11T16:09:00",label:1},
+  {who:"Luis Bohorquez",order:"19349456",cards:2,trk:"877391163211",carrier:"FedEx Express",read:"label",ts:"2026-09-11T14:44:00",label:1},
+  {who:"Jimi Kim",order:"19352491",cards:6,trk:"877435396017",carrier:"FedEx Express",read:"label",ts:"2026-09-11T14:03:00",label:1},
+  {who:"Ricky Barnett",order:"19354487",cards:22,trk:"877923197717",carrier:"FedEx Ground",read:"label",ts:"2026-09-11T08:55:00",label:1},
+  {who:"Joey Abelsen",order:"19355594",cards:12,trk:"93346208455001098592",carrier:"USPS",read:"label",ts:"2026-09-11T14:13:00",label:1},
+  {who:"Davis Umann",order:"19357629",cards:1,trk:"877720403365",carrier:"FedEx Express",read:"label",ts:"2026-09-11T09:25:00",label:1},
+  {who:"Joey Abelsen",order:"19361095",cards:2,trk:"877155507515",carrier:"FedEx Ground",read:"label",ts:"2026-09-11T10:00:00",label:1},
+  {who:"Luis Bohorquez",order:"19364019",cards:12,trk:"877768076355",carrier:"FedEx Express",read:"label",ts:"2026-09-11T09:36:00",label:1},
+  {who:"Jake Hull",order:"19364916",cards:9,trk:"877659590087",carrier:"FedEx Express",read:"label",ts:"2026-09-12T12:10:00",label:1},
+  {who:"James Beaton",order:"19365661",cards:12,trk:"877964162032",carrier:"FedEx Express",read:"label",ts:"2026-09-12T15:48:00",label:1},
+  {who:"James Beaton",order:"19366479",cards:1,trk:"877157310482",carrier:"FedEx Express",read:"label",ts:"2026-09-12T15:20:00",label:1},
+  {who:"Jimi Kim",order:"19370482",cards:2,trk:"877534311982",carrier:"FedEx Express",read:"label",ts:"2026-09-12T11:39:00",label:1},
+  {who:"James Beaton",order:"19372719",cards:2,trk:"877144788540",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-12T17:13:00",label:1},
+  {who:"Jimi Kim",order:"19373659",cards:12,trk:"877260489123",carrier:"FedEx Home",read:"label",ts:"2026-09-12T13:07:00",label:1},
+  {who:"Arman Abonitalla",order:"19377299",cards:3,trk:"877703811485",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-12T08:56:00",label:1},
+  {who:"Steven Ramirez",order:"19381032",cards:8,trk:"93346208455008645939",carrier:"USPS",read:"label",ts:"2026-09-12T09:24:00",label:1},
+  {who:"Luis Bohorquez",order:"19383900",cards:6,trk:"",carrier:"No tracking",read:"",ts:"2026-09-12T14:19:00",label:0},
+  {who:"Ricky Barnett",order:"19385943",cards:12,trk:"877640713189",carrier:"FedEx Express",read:"label",ts:"2026-09-12T13:28:00",label:1},
+  {who:"Davis Umann",order:"19386338",cards:1,trk:"877599583224",carrier:"FedEx Express",read:"label",ts:"2026-09-12T17:31:00",label:1},
+  {who:"Davis Umann",order:"19389171",cards:26,trk:"877608114871",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T10:51:00",label:1},
+  {who:"Jimi Kim",order:"19389745",cards:2,trk:"877492272589",carrier:"FedEx Express",read:"label",ts:"2026-09-14T13:27:00",label:1},
+  {who:"Steven Ramirez",order:"19391855",cards:58,trk:"877143773013",carrier:"FedEx — unverified",read:"pending",ts:"2026-09-14T16:42:00",label:1},
+  {who:"Steven Ramirez",order:"19392688",cards:1,trk:"93346208455009581239",carrier:"USPS",read:"label",ts:"2026-09-14T13:49:00",label:1},
+  {who:"Steven Ramirez",order:"19396068",cards:58,trk:"877942074269",carrier:"FedEx Express",read:"label",ts:"2026-09-14T14:41:00",label:1},
+  {who:"Steven Ramirez",order:"19399878",cards:1,trk:"877843619413",carrier:"FedEx Express",read:"label",ts:"2026-09-14T17:46:00",label:1},
+  {who:"Steven Ramirez",order:"19400717",cards:41,trk:"877953598846",carrier:"FedEx Express",read:"label",ts:"2026-09-14T12:51:00",label:1},
+  {who:"James Beaton",order:"19404246",cards:4,trk:"93346208455006887081",carrier:"USPS",read:"label",ts:"2026-09-14T09:53:00",label:1},
+  {who:"Arman Abonitalla",order:"19405872",cards:5,trk:"877372903727",carrier:"FedEx Express",read:"label",ts:"2026-09-14T15:09:00",label:1},
+];
+
+let DATA = SAMPLE.map(r=>({...r}));
+
+/* Live data. In the Vercel app /api/shipments proxies Metabase card 38974
+   (https://arena-club.metabaseapp.com/question/38974). Falls back to the
+   sample rows when the route isn't there — e.g. opening this file directly. */
+const METABASE_CARD = 38974;
+
+async function loadLive(){
+  const s = v("f-start"), e = v("f-end");
+  const qs = new URLSearchParams();
+  if(s) qs.set("start", s);
+  if(e) qs.set("end", e);
+  try{
+    const res = await fetch("/api/shipments?" + qs.toString());
+    if(!res.ok) throw new Error(res.status);
+    const rows = await res.json();
+    if(!Array.isArray(rows) || !rows.length) throw new Error("empty");
+    DATA = rows;
+    rebuildEmployees();
+    render();
+    return true;
+  }catch(err){
+    console.info("Using sample data —", err.message);
+    return false;
+  }
+}
+
+function rebuildEmployees(){
+  const sel = document.getElementById("f-emp");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All employees</option>';
+  [...new Set(DATA.map(r=>r.who))].sort().forEach(n=>{
+    const o=document.createElement("option"); o.textContent=n; sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+let view = "today", sortKey="ts", sortDir=-1;
+const TODAY = "2026-09-14";
+
+const fmtTrk = s => !s ? "" : /^\d{12}$/.test(s) ? s.replace(/(\d{4})(\d{4})(\d{4})/,"$1 $2 $3")
+                   : s.replace(/(.{4})/g,"$1 ").trim();
+const fmtTs = iso => new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+const day = r => r.ts.slice(0,10);
+const weekAgo = () => { const d=new Date(TODAY); d.setDate(d.getDate()-6); return d.toISOString().slice(0,10); };
+
+const TINTS = {
+  "FedEx Express":"#ff7a2f","FedEx Ground":"#9b7bf0","FedEx Home":"#9b7bf0",
+  "USPS":"#4d93d9","DHL":"#ffcd01","FedEx — unverified":"#e8b04b","No tracking":"#ef4444"
+};
+
+function teamStats(rows){
+  const m = {};
+  rows.forEach(r=>{
+    const e = m[r.who] ||= {who:r.who, orders:0, cards:0, days:new Set(), mix:{}, last:"", byDay:{}};
+    e.orders++; e.cards += r.cards; e.days.add(r.ts.slice(0,10));
+    e.mix[r.carrier] = (e.mix[r.carrier]||0)+1;
+    (e.mixCards ||= {})[r.carrier] = (e.mixCards[r.carrier]||0)+r.cards;
+    e.byDay[r.ts.slice(0,10)] = (e.byDay[r.ts.slice(0,10)]||0)+r.cards;
+    if(r.ts > e.last) e.last = r.ts;
+  });
+  return Object.values(m).map(e=>({
+    ...e, days:e.days.size,
+    avg: +(e.cards/e.orders).toFixed(1),
+    best: Math.max(...Object.values(e.byDay)),
+    top: Object.entries(e.mix).sort((a,b)=>b[1]-a[1])[0][0]
+  }));
+}
+
+let tSort="cards", tDir=-1;
+
+function renderTeam(){
+  const scope = DATA.filter(r=>{
+    const s=v("f-start"), e=v("f-end");
+    if(s && r.ts.slice(0,10)<s) return false;
+    if(e && r.ts.slice(0,10)>e) return false;
+    return true;
+  });
+  const stats = teamStats(scope).sort((a,b)=>{
+    const x=a[tSort], y=b[tSort];
+    return typeof x==="number" ? (x-y)*tDir : String(x).localeCompare(String(y))*tDir;
+  });
+
+  document.getElementById("tm-count").textContent = stats.length;
+  document.getElementById("teamrows").innerHTML = stats.map(e=>{
+    const tot = e.orders;
+    const mix = Object.entries(e.mix).sort((a,b)=>b[1]-a[1]).map(([c,n])=>
+      `<i style="width:${n/tot*100}%;background:${TINTS[c]||"#fff"}"></i>`).join("");
+    return `<tr>
+      <td><button class="namebtn" data-emp="${e.who}">${e.who}</button></td>
+      <td class="num">${e.orders}</td>
+      <td class="num">${e.cards.toLocaleString()}</td>
+      <td class="num">${e.avg}</td>
+      <td class="num">${e.best}</td>
+      <td><span class="mix" data-emp="${e.who}">${mix}</span></td>
+      <td class="mono">${fmtTs(e.last)}</td>
+    </tr>`;
+  }).join("");
+
+  document.querySelectorAll(".namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
+
+  const statsByName = Object.fromEntries(stats.map(e=>[e.who,e]));
+  document.querySelectorAll(".mix").forEach(el=>{
+    el.onmousemove = ev => {
+      const e = statsByName[el.dataset.emp]; if(!e) return;
+      const rows = Object.entries(e.mix).sort((a,b)=>b[1]-a[1]).map(([c,n])=>
+        `<div class="r"><i style="background:${TINTS[c]||"#fff"}"></i><span>${c}</span><b>${n}</b><em>${(e.mixCards?.[c]||0).toLocaleString()} cards</em></div>`).join("");
+      showTip(ev, `<h4>${e.who}</h4>${rows}
+        <div class="tot"><span>Total</span><b>${e.orders} orders · ${e.cards.toLocaleString()} cards</b></div>`);
+    };
+    el.onmouseleave = hideTip;
+  });
+  document.querySelectorAll("#teamtable th[data-t]").forEach(th=>{
+    th.classList.toggle("on", th.dataset.t===tSort);
+    const ar = th.querySelector(".ar");
+    if(ar) ar.textContent = (th.dataset.t===tSort && tDir===1) ? "▴" : "▾";
+    th.onclick=()=>{ const k=th.dataset.t;
+      if(k===tSort) tDir*=-1; else { tSort=k; tDir = k==="who" ? 1 : -1; }
+      renderTeam(); };
+  });
+}
+
+function showModal(name){
+  const rows = DATA.filter(r=>r.who===name);
+  if(!rows.length) return;
+  const e = teamStats(rows)[0];
+  const mix = Object.entries(e.mix).sort((a,b)=>b[1]-a[1]);
+  const bar = mix.map(([c,n])=>'<i style="width:'+(n/e.orders*100)+'%;background:'+(TINTS[c]||"#fff")+'"></i>').join("");
+  const list = mix.map(([c,n])=>
+    '<div class="mrow"><i style="background:'+(TINTS[c]||"#fff")+'"></i><span>'+c+'</span>'
+    +'<b>'+n+'</b><em>'+(e.mixCards[c]||0).toLocaleString()+' cards</em>'
+    +'<s>'+Math.round(n/e.orders*100)+'%</s></div>').join("");
+
+  const days = Object.entries(e.byDay).sort((a,b)=> a[0]<b[0] ? 1 : -1).slice(0,8);
+  const dmax = Math.max.apply(null, days.map(d=>d[1]).concat([1]));
+  const recent = days.map(([d,n])=>
+    '<div class="dayrow"><span>'+d.slice(5)+'</span>'
+    +'<span class="track"><i style="width:'+(n/dmax*100)+'%"></i></span><b>'+n+'</b></div>').join("");
+
+  document.getElementById("mbox").innerHTML =
+    '<div class="mtop"><div><h3>'+name+'</h3>'
+    +'<div style="margin-top:8px;font-size:15px;color:#ffffff">last shipment '+fmtTs(e.last)+'</div></div>'
+    +'<button class="x" onclick="closeModal()">&#10005;</button></div>'
+    +'<div class="mgrid">'
+    +'<div><div class="k">Orders</div><div class="v">'+e.orders+'</div></div>'
+    +'<div><div class="k">Cards</div><div class="v">'+e.cards.toLocaleString()+'</div></div>'
+    +'<div><div class="k">Avg / order</div><div class="v">'+e.avg+'</div></div>'
+    +'<div><div class="k">Best day</div><div class="v">'+e.best+'</div></div>'
+    +'</div>'
+    +'<div class="msec"><h5>Carrier mix</h5><div class="mbar">'+bar+'</div>'+list+'</div>'
+    +'<div class="msec" style="border-top:1px solid var(--line)"><h5>Recent days &middot; cards shipped</h5>'+recent+'</div>'
+    +'<div class="msec" style="border-top:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap">'
+    +'<button class="btn go" id="mb-all">See all shipments</button>'
+    +'<button class="btn" onclick="closeModal()">Close</button></div>';
+
+  document.getElementById("mb-all").onclick = ()=>{ closeModal(); showEmployee(name); };
+  document.getElementById("modal").classList.add("on");
+}
+window.showModal = showModal;
+window.closeModal = function(){ document.getElementById("modal").classList.remove("on"); };
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeModal(); });
+document.getElementById("modal").onclick = e=>{ if(e.target.id==="modal") closeModal(); };
+
+function showEmployee(name){
+  document.getElementById("f-emp").value = name;
+  const rows = DATA.filter(r=>r.who===name);
+  const st = teamStats(rows)[0];
+  const days = [...new Set(DATA.map(r=>r.ts.slice(0,10)))].sort();
+
+  document.getElementById("d-name").textContent = name;
+  document.getElementById("d-sum").textContent =
+    `${st.orders} orders · ${st.cards.toLocaleString()} cards · ${st.avg} avg · best day ${st.best}`;
+
+  const max = Math.max(...days.map(d=>rows.filter(r=>r.ts.startsWith(d)).reduce((n,r)=>n+r.cards,0)), 1);
+  document.getElementById("d-daily").innerHTML = days.map(d=>{
+    const dayRows = rows.filter(r=>r.ts.startsWith(d));
+    const n = dayRows.reduce((s,r)=>s+r.cards,0);
+    const byCar = {};
+    dayRows.forEach(r=>byCar[r.carrier]=(byCar[r.carrier]||0)+r.cards);
+    const segs = Object.entries(byCar).map(([c,k])=>
+      `<i style="height:${k/n*100}%;background:${TINTS[c]||"#fff"}"></i>`).join("");
+    const hpx = n ? Math.max(Math.round(n/max*104), 3) : 0;
+    return `<div class="bar2${n?"":" none"}" title="${d}: ${n} cards">
+      <span class="n">${n||""}</span>
+      <span class="col" style="height:${hpx}px">${segs}</span>
+      <span class="d">${d.slice(5)}</span>
+    </div>`;
+  }).join("");
+
+  document.getElementById("detail").hidden = false;
+  render();
+  document.getElementById("detail").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+function viewRows(){
+  if(view==="today")      return DATA.filter(r=>day(r)===TODAY);
+  if(view==="week")       return DATA.filter(r=>day(r)>=weekAgo());
+  if(view==="unverified") return DATA.filter(r=>r.carrier==="FedEx — unverified");
+  if(view==="notrack")    return DATA.filter(r=>!r.trk);
+  return DATA;
+}
+
+function filtered(){
+  const s=v("f-start"), e=v("f-end"), emp=v("f-emp"), ord=v("f-order").trim(),
+        trk=v("f-trk").replace(/\D/g,""), car=v("f-car"),
+        mn=v("f-min"), mx=v("f-max");
+  return viewRows().filter(r=>{
+    if(s && day(r)<s) return false;
+    if(e && day(r)>e) return false;
+    if(emp && r.who!==emp) return false;
+    if(ord && !r.order.includes(ord)) return false;
+    if(trk && !r.trk.replace(/\D/g,"").includes(trk)) return false;
+    if(car && r.carrier!==car) return false;
+    if(mn!=="" && r.cards < +mn) return false;
+    if(mx!=="" && r.cards > +mx) return false;
+    return true;
+  }).sort((a,b)=>{
+    const x=a[sortKey], y=b[sortKey];
+    return sortKey==="cards" ? (x-y)*sortDir : String(x).localeCompare(String(y))*sortDir;
+  });
+}
+const v = id => document.getElementById(id).value;
+
+function chip(c){
+  const logo = CARRIER_LOGOS[c];
+  const mk = logo ? `<img src="${logo}" alt="">`
+                  : `<span class="mk">${MARKER[c] || "?"}</span>`;
+  return `<span class="car ${CLS[c]||"c-unknown"}">${mk}${c}</span>`;
+}
+
+function render(){
+  const rows = filtered();
+
+  // tabs
+  document.getElementById("t-today").textContent = DATA.filter(r=>day(r)===TODAY).length;
+  document.getElementById("t-week").textContent  = DATA.filter(r=>day(r)>=weekAgo()).length;
+  document.getElementById("t-unver").textContent = DATA.filter(r=>r.carrier==="FedEx — unverified").length;
+  document.getElementById("t-notrk").textContent = DATA.filter(r=>!r.trk).length;
+
+  // stats
+  const cards = rows.reduce((n,r)=>n+r.cards,0);
+  const by = {};
+  viewRows().forEach(r=>by[r.carrier]=(by[r.carrier]||0)+1);
+  const byCards = {};
+  viewRows().forEach(r=>byCards[r.carrier]=(byCards[r.carrier]||0)+r.cards);
+
+  document.getElementById("stats").innerHTML = [
+    {k:"Orders shipped", v:rows.length, s:"in this view", c:"var(--green)"},
+    {k:"Cards shipped",  v:cards,       s:"distinct cards scanned", c:"var(--green)"},
+    {k:"Unverified service", v:viewRows().filter(r=>r.carrier==="FedEx — unverified").length,
+       s:"read the label to resolve", c:"var(--gold)", warn:"var(--gold)"},
+    {k:"No tracking",    v:viewRows().filter(r=>!r.trk).length,
+       s:"shipped with no number", c:"var(--red)", warn:"var(--red)"},
+    {k:"Employees",      v:new Set(rows.map(r=>r.who)).size, s:"shipping today", c:"var(--green)"}
+  ].map(x=>`
+    <div class="stat">
+      <div class="k">${x.k}</div>
+      <div class="v" style="color:${x.warn||"var(--ink)"}">${x.v.toLocaleString()}</div>
+      <div class="s">${x.s}</div>
+      <div class="rule" style="background:${x.c}"></div>
+    </div>`).join("");
+
+  // carrier tiles — click one to filter the table
+  const TINT = {
+    "FedEx Express":"var(--express)","FedEx Ground":"var(--ground)","FedEx Home":"var(--ground)",
+    "USPS":"var(--usps)","DHL":"var(--dhl)","FedEx — unverified":"var(--gold)","No tracking":"var(--red)"
+  };
+  const ORDER = ["FedEx Express","FedEx Ground","FedEx Home","USPS","DHL","FedEx — unverified","No tracking"];
+  const active = v("f-car");
+
+  document.getElementById("carriers").innerHTML = ORDER.map(c=>{
+    const n = by[c]||0, k = byCards[c]||0, logo = CARRIER_LOGOS[c];
+    return `<button class="ctile${active===c?" on":""}${n?"":" zero"}" style="--tint:${TINT[c]}" data-car="${c}">
+      <div class="mark">
+        ${logo ? `<img src="${logo}" alt="${c}">` : `<span class="fake">${MARKER[c]||"?"}</span>`}
+        <span class="nm">${c}</span>
+      </div>
+      <div class="row">
+        <span class="v">${n}</span>
+        <span class="c">${k.toLocaleString()} cards<br>${n?Math.round(n/Math.max(viewRows().length,1)*100):0}% of orders</span>
+      </div>
+      <div class="bar"></div>
+    </button>`;
+  }).join("");
+
+  document.querySelectorAll(".ctile").forEach(t=>t.onclick=()=>{
+    const c=t.dataset.car;
+    document.getElementById("f-car").value = (v("f-car")===c) ? "" : c;
+    render();
+  });
+
+  // table
+  document.getElementById("rows").innerHTML = rows.map((r,i)=>`
+    <tr>
+      <td>${r.label
+        ? `<img class="thumb" src="${labelSrc(r)}" alt="Label ${r.order}" onclick="zoom('${labelSrc(r)}')" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb miss',textContent:'—'}))">`
+        : `<div class="thumb miss">—</div>`}</td>
+      <td><button class="namebtn${r.gap?" gap":""}" data-emp="${r.who}">${r.who}</button></td>
+      <td><a class="lnk mono" href="#" onclick="return false">#${r.order}</a></td>
+      <td class="num">${r.cards}</td>
+      <td class="mono">${r.trk ? fmtTrk(r.trk) : '<span class="dim">—</span>'}</td>
+      <td>${chip(r.carrier)}</td>
+      <td>${r.read==="label" ? '<span class="src read">read from label</span>'
+            : r.read==="pending" ? `<button class="readbtn" onclick="readOne(${DATA.indexOf(r)})">Read label</button>`
+            : '<span class="src">—</span>'}</td>
+      <td class="dim mono">${fmtTs(r.ts)}</td>
+      <td>${r.trk?'<a class="lnk" href="#" onclick="return false">track</a> ':''}<a class="lnk" href="#" onclick="return false">order</a></td>
+    </tr>`).join("");
+
+  document.querySelectorAll("#rows .namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
+  document.getElementById("empty").hidden = rows.length>0;
+  document.getElementById("p-count").textContent = rows.length;
+  document.getElementById("t-team").textContent = new Set(DATA.map(r=>r.who)).size;
+
+  const team = view==="team";
+  document.getElementById("teampanel").hidden = !team;
+  document.getElementById("stats").hidden = team;
+  document.getElementById("carriers").hidden = team;
+  document.querySelector(".panel:not(#teampanel):not(#detail)").hidden = team && !v("f-emp");
+  if(team) renderTeam();
+  document.getElementById("m-orders").textContent = DATA.length;
+  document.getElementById("m-cards").textContent  = DATA.reduce((n,r)=>n+r.cards,0).toLocaleString();
+  document.getElementById("m-asof").textContent   = new Date(TODAY+"T12:00:00")
+    .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+
+  document.querySelectorAll("th[data-k]").forEach(th=>{
+    th.classList.toggle("on", th.dataset.k===sortKey);
+    const ar = th.querySelector(".ar");
+    if(ar) ar.textContent = (th.dataset.k===sortKey && sortDir===1) ? "▴" : "▾";
+  });
+}
+
+/* label image: in production this is the order's LABEL_IMAGE url */
+function labelSrc(r){ return "data:image/svg+xml;utf8," + encodeURIComponent(fakeLabel(r)); }
+function fakeLabel(r){
+  const m = MARKER[r.carrier] || "?";
+  const isUsps = r.carrier==="USPS";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="170" height="220" viewBox="0 0 170 220">
+    <rect width="170" height="220" fill="#fff"/>
+    <g fill="#000" font-family="Helvetica" >
+      <rect x="8" y="8" width="154" height="1"/>
+      <text x="12" y="24" font-size="7">AC · 2850 SW CEDAR HILLS BLVD</text>
+      <text x="12" y="36" font-size="8" font-weight="bold">ORDER ${r.order}</text>
+      ${isUsps
+        ? `<rect x="10" y="44" width="40" height="40" fill="#000"/><text x="18" y="76" font-size="30" fill="#fff" font-weight="bold">E</text>
+           <text x="56" y="70" font-size="11" font-weight="bold">USPS</text><text x="56" y="82" font-size="7">PRIORITY MAIL</text>`
+        : `<text x="104" y="60" font-size="11" font-weight="bold">FedEx</text>
+           <text x="104" y="70" font-size="7">${r.carrier.replace("FedEx ","")}</text>
+           <rect x="112" y="76" width="34" height="34" fill="none" stroke="#000" stroke-width="3"/>
+           <text x="119" y="102" font-size="22" font-weight="bold">${m}</text>`}
+      ${Array.from({length:38},(_,i)=>`<rect x="${12+i*3.8}" y="120" width="${i%3?1.4:2.6}" height="34"/>`).join("")}
+      <text x="12" y="176" font-size="9" font-weight="bold">${fmtTrk(r.trk)||"—"}</text>
+      ${Array.from({length:44},(_,i)=>`<rect x="${12+i*3.3}" y="186" width="${i%2?1.2:2.2}" height="24"/>`).join("")}
+    </g></svg>`;
+}
+
+function showTip(ev, html){
+  const t = document.getElementById("tip");
+  t.innerHTML = html; t.classList.add("on");
+  const w = t.offsetWidth, hh = t.offsetHeight;
+  let x = ev.clientX + 16, y = ev.clientY - hh/2;
+  if(x + w > innerWidth - 12) x = ev.clientX - w - 16;
+  y = Math.max(12, Math.min(y, innerHeight - hh - 12));
+  t.style.left = x+"px"; t.style.top = y+"px";
+}
+function hideTip(){ document.getElementById("tip").classList.remove("on"); }
+
+window.zoom = src => { document.getElementById("lbimg").src=src; document.getElementById("lb").classList.add("on"); };
+document.getElementById("lbx").onclick = ()=>document.getElementById("lb").classList.remove("on");
+document.getElementById("lb").onclick = e=>{ if(e.target.id==="lb") e.currentTarget.classList.remove("on"); };
+
+/* resolve one label — in production this POSTs to /api/read-label
+   which fetches the PNG and asks Claude which marker box it shows */
+window.readOne = i => {
+  const r = DATA[i];
+  const guess = ["FedEx Express","FedEx Ground","FedEx Home"][Math.floor(Math.random()*3)];
+  r.carrier = guess; r.read = "label";
+  render();
+};
+document.getElementById("readall").onclick = ()=>{
+  DATA.forEach((r,i)=>{ if(r.carrier==="FedEx — unverified") readOne(i); });
+};
+
+/* controls */
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
+  t.classList.add("on"); view=t.dataset.view; render();
+});
+document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k;
+  if(k===sortKey) sortDir*=-1; else { sortKey=k; sortDir=(k==="cards"||k==="ts")?-1:1; }
+  render();
+});
+document.getElementById("apply").onclick = render;
+document.getElementById("clear").onclick = ()=>{
+  ["f-start","f-end","f-emp","f-order","f-trk","f-car","f-min","f-max"].forEach(id=>document.getElementById(id).value="");
+  document.getElementById("detail").hidden = true;
+  render();
+};
+["f-order","f-trk","f-min","f-max"].forEach(id=>document.getElementById(id).oninput=render);
+["f-start","f-end","f-car"].forEach(id=>document.getElementById(id).onchange=render);
+document.getElementById("f-emp").onchange = e => {
+  if(e.target.value) showEmployee(e.target.value);
+  else { document.getElementById("detail").hidden = true; render(); }
+};
+document.getElementById("refresh").onclick = async ()=>{
+  const b = document.getElementById("refresh");
+  b.textContent = "Loading…";
+  const ok = await loadLive();
+  if(!ok){ DATA = SAMPLE.map(r=>({...r})); rebuildEmployees(); render(); }
+  b.textContent = "Refresh ↻";
+};
+document.getElementById("home").onclick = ()=>{
+  ["f-start","f-end","f-emp","f-order","f-trk","f-car","f-min","f-max"]
+    .forEach(id=>document.getElementById(id).value="");
+  document.getElementById("detail").hidden = true;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view==="today"));
+  view = "today"; sortKey = "ts"; sortDir = -1;
+  DATA = SAMPLE.map(r=>({...r}));
+  render();
+  window.scrollTo({top:0,behavior:"smooth"});
+};
+
+document.getElementById("metabase").onclick = ()=>window.open("https://arena-club.metabaseapp.com/question/" + METABASE_CARD, "_blank");
+document.getElementById("csv").onclick = ()=>{
+  const rows=filtered();
+  const csv=[["Shipped by","Order","Cards","Tracking","Carrier","Service read","Completed"],
+    ...rows.map(r=>[r.who,r.order,r.cards,r.trk,r.carrier,r.read,r.ts])]
+    .map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download="ship-dashboard.csv"; a.click();
+};
+
+/* employee list */
+[...new Set(SAMPLE.map(r=>r.who))].sort().forEach(n=>{
+  const o=document.createElement("option"); o.textContent=n; document.getElementById("f-emp").appendChild(o);
+});
+
+render();
+loadLive();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "arena-ship-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Arena Club Ship Dashboard — orders shipped by employee, carrier and day",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  },
+  "engines": { "node": ">=20" }
+}
