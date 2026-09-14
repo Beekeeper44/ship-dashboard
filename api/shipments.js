@@ -57,7 +57,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const { start, end, debug } = req.query;
+  const { start, end, debug, fresh } = req.query;
 
   let tags;
   try {
@@ -179,7 +179,9 @@ export default async function handler(req, res) {
     }
   }
 
-  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
+  res.setHeader('Cache-Control', fresh
+    ? 'no-store, no-cache, must-revalidate'
+    : 's-maxage=60, stale-while-revalidate=120');
   res.setHeader('X-Cache-Store', process.env.DATABASE_URL ? 'neon' : 'none');
   return res.status(200).json(rows);
 }

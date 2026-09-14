@@ -107,9 +107,14 @@ nothing else in the UI changes.
 
 | | Cost | Speed | Needs |
 |---|---|---|---|
-| **Read labels (OCR)** | free | ~2-4s per label, in your browser | nothing |
+| **Read labels (OCR)** | free | ~2-4s per label, in your browser | nothing — **runs automatically** |
 | **Classify labels** | free | ~2s per label, by eye | nothing |
 | **Auto-read with AI** | ~$0.01 per label | seconds, in the background | `ANTHROPIC_API_KEY` |
+
+**Auto-OCR is on by default.** After every load — first visit, Refresh, Apply,
+or an auto-refresh tick — anything still unverified gets read in the background.
+Because results are cached in Neon, each label is only ever read once, so a
+refresh mid-day only reads shipments that are genuinely new.
 
 All three write to the same Neon cache, so a label is only ever read once and
 you can mix them. OCR runs first, and anything it can't read confidently is
