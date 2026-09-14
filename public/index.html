@@ -326,7 +326,7 @@
   <!-- ================= tabs ================= -->
   <div class="tabs">
     <button class="tab on" data-view="today">Today <span class="n" id="t-today">0</span></button>
-    <button class="tab" data-view="week">This week <span class="n" id="t-week">0</span></button>
+    <button class="tab" data-view="week">Date range <span class="n" id="t-week">0</span></button>
     <button class="tab" data-view="unverified">Unverified service <span class="n" id="t-unver">0</span></button>
     <button class="tab" data-view="notrack">No tracking <span class="n" id="t-notrk">0</span></button>
     <button class="tab" data-view="team">Team history <span class="n" id="t-team">0</span></button>
@@ -760,10 +760,10 @@ function showEmployee(name){
 }
 
 function viewRows(){
-  if(view==="today")      return DATA.filter(r=>day(r)===TODAY);
-  if(view==="week")       return DATA.filter(r=>day(r)>=weekAgo());
-  if(view==="unverified") return DATA.filter(r=>r.carrier==="FedEx — unverified");
-  if(view==="notrack")    return DATA.filter(r=>!r.trk);
+  // The date range comes from the date fields only — the tabs set those rather
+  // than filtering on top of them, so a custom range always wins.
+  if(view === "unverified") return DATA.filter(r=>r.carrier === "FedEx — unverified" || r.carrier === "Unknown — check");
+  if(view === "notrack")    return DATA.filter(r=>!r.trk);
   return DATA;
 }
 
@@ -831,7 +831,7 @@ function render(){
 
   // tabs
   document.getElementById("t-today").textContent = DATA.filter(r=>day(r)===TODAY).length;
-  document.getElementById("t-week").textContent  = DATA.filter(r=>day(r)>=weekAgo()).length;
+  document.getElementById("t-week").textContent  = DATA.length;
   document.getElementById("t-unver").textContent = DATA.filter(r=>r.carrier==="FedEx — unverified").length;
   document.getElementById("t-notrk").textContent = DATA.filter(r=>!r.trk).length;
 
@@ -925,7 +925,11 @@ function render(){
   if(team) renderTeam();
   document.getElementById("m-orders").textContent = DATA.length;
   document.getElementById("m-cards").textContent  = DATA.reduce((n,r)=>n+r.cards,0).toLocaleString();
-  document.getElementById("m-asof").textContent   = new Date(TODAY+"T12:00:00")
+  const rs = v("f-start"), re_ = v("f-end");
+  document.getElementById("m-asof").textContent = (rs && re_ && rs !== re_)
+    ? (new Date(rs+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"}) + " – " +
+       new Date(re_+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}))
+    : new Date((rs||TODAY)+"T12:00:00")
     .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
 
   document.querySelectorAll("th[data-k]").forEach(th=>{
@@ -1500,9 +1504,22 @@ document.getElementById("classify").onclick = ()=>{
 };
 
 /* controls */
-document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
+document.querySelectorAll(".tab").forEach(t=>t.onclick=async ()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
-  t.classList.add("on"); view=t.dataset.view; render();
+  t.classList.add("on");
+  view = t.dataset.view;
+
+  const s = document.getElementById("f-start"), e = document.getElementById("f-end");
+  if(view === "today"){        // narrow the range to today and refetch
+    s.value = TODAY; e.value = TODAY;
+    await loadLive();
+  }else if(view === "week"){
+    s.value = weekAgo(); e.value = TODAY;
+    await loadLive();
+  }
+  // unverified / notrack / team keep whatever range is set — they filter on
+  // status, not on dates
+  render();
 });
 document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
   const k=th.dataset.k;
