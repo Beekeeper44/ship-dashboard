@@ -92,3 +92,13 @@ CREATE INDEX IF NOT EXISTS shipment_log_carrier_idx   ON shipment_log (carrier);
 -- SELECT s.order_number, s.service AS read_from_label, l.service AS from_arta
 --   FROM shipment_service s JOIN shipment_log l USING (order_number)
 --  WHERE s.service IS DISTINCT FROM l.service;
+
+-- ---------------------------------------------------------------
+-- If any rows were saved by the early demo placeholder (random guesses,
+-- before the real reader was wired up), clear them so they get re-done:
+--
+--   DELETE FROM shipment_service WHERE evidence IS NULL OR evidence = '';
+--
+-- Rows written properly always carry evidence — either what the model saw,
+-- or 'set by hand from the label'.
+-- ---------------------------------------------------------------

@@ -103,6 +103,23 @@ engineering persists those two fields at label creation, delete
 `api/read-label.js` and `api/_store.js`, read the column in the SQL instead, and
 nothing else in the UI changes.
 
+## Three ways to resolve Ground vs Express
+
+| | Cost | Speed | Needs |
+|---|---|---|---|
+| **Read labels (OCR)** | free | ~2-4s per label, in your browser | nothing |
+| **Classify labels** | free | ~2s per label, by eye | nothing |
+| **Auto-read with AI** | ~$0.01 per label | seconds, in the background | `ANTHROPIC_API_KEY` |
+
+All three write to the same Neon cache, so a label is only ever read once and
+you can mix them. OCR runs first, and anything it can't read confidently is
+left unverified for you to classify by hand — a low-confidence guess is worse
+than no answer.
+
+OCR uses tesseract.js loaded from a CDN, cropped to the right-hand block where
+the FedEx wordmark and marker box sit. Labels are proxied through
+`/api/label-image` because reading pixels from another domain taints the canvas.
+
 ## Neon setup
 
 Create a Neon project, copy the connection string into `DATABASE_URL`, then run:

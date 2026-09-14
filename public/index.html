@@ -273,7 +273,22 @@
   .lb.zoomed .frame{align-items:flex-start}
   .lb.zoomed img{height:auto;width:min(calc(100vw - 80px), 900px);max-width:none;cursor:zoom-out}
   .lb img{cursor:zoom-in}
-  .lb .bar{display:flex;align-items:center;gap:12px;color:#fff;font-size:14px}
+  .lb .bar{display:flex;align-items:center;gap:12px;color:#fff;font-size:14px;flex-wrap:wrap;justify-content:center}
+  .lb .pick{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center}
+  .lb .pick .lbl{font-size:13px;letter-spacing:.8px;text-transform:uppercase;opacity:.85}
+  .pickbtn{
+    display:inline-flex;align-items:center;gap:9px;padding:10px 16px;border-radius:6px;
+    border:1px solid #333;background:#101010;color:#fff;font:inherit;font-size:14px;
+    font-weight:700;cursor:pointer;white-space:nowrap;
+  }
+  .pickbtn:hover{border-color:var(--tintc,#fff);background:#171717}
+  .pickbtn img{width:24px;height:24px;object-fit:contain;border-radius:3px}
+  .pickbtn kbd{
+    font:inherit;font-size:12px;font-weight:700;background:#2a2a2a;border-radius:3px;
+    padding:2px 7px;color:#fff;border:1px solid #3a3a3a;
+  }
+  .lb .prog{font-size:13px;opacity:.85;font-variant-numeric:tabular-nums}
+  .lb .saved{color:var(--green);font-weight:700}
   .lb .bar b{font-weight:700}
   .lb .x{position:absolute;top:18px;right:24px;color:#fff;font-size:30px;cursor:pointer;
     background:none;border:none;line-height:1;padding:4px 10px}
@@ -340,10 +355,11 @@
     <button class="btn go" id="apply">Apply</button>
     <button class="btn" id="clear">Clear</button>
     <button class="btn" id="csv">Export CSV</button>
-    <button class="btn" id="readall">Read unverified labels</button>
-    <label class="toggle" title="Read labels automatically whenever data loads">
-      <input type="checkbox" id="autoread" checked>
-      <span>Auto-read labels</span>
+    <button class="btn go" id="classify">Classify labels</button>
+    <button class="btn" id="ocr" title="Free — reads the labels in your browser, no API key">Read labels (OCR)</button>
+    <label class="toggle" title="Use the Claude API to read labels automatically (needs ANTHROPIC_API_KEY)">
+      <input type="checkbox" id="autoread">
+      <span>Auto-read with AI</span>
     </label>
   </div>
 
@@ -425,9 +441,11 @@
   <div class="frame"><img id="lbimg" alt="Shipping label"></div>
   <div class="bar">
     <span id="lbcap"></span>
+    <span class="prog" id="lbprog"></span>
     <button class="btn" id="lbzoom">Zoom in</button>
     <a class="btn" id="lbopen" target="_blank" rel="noopener">Open full size &#8599;</a>
   </div>
+  <div class="pick" id="lbpick"></div>
 </div>
 <div class="modal" id="modal"><div class="mbox" id="mbox"></div></div>
 
@@ -760,7 +778,10 @@ function maybeAutoRead(){
 function setStatus(kind, detail){
   const el = document.getElementById("status");
   el.hidden = false;
-  if(kind === "loading"){
+  if(kind === "loading2"){
+    el.className = "status sample";
+    el.innerHTML = '<span class="d"></span><span>' + detail + '</span>';
+  } else if(kind === "loading"){
     el.className = "status sample";
     el.innerHTML = '<span class="d"></span><span>Loading from Metabase question ' + METABASE_CARD + '…</span>';
   } else if(kind === "live"){
@@ -1097,7 +1118,7 @@ function render(){
             : '<span class="dim">—</span>'}</td>
       <td>${chip(r.carrier)}</td>
       <td>${r.read==="label" ? '<span class="src read">read from label</span>'
-            : r.read==="pending" ? `<button class="readbtn" onclick="readOne(${DATA.indexOf(r)}, this)">Read label</button>`
+            : r.read==="pending" ? `<button class="readbtn" onclick="openLabel(${DATA.indexOf(r)})">Check label</button>`
             : '<span class="src">—</span>'}</td>
       <td class="dim mono">${fmtTs(r.ts)}</td>
       <td>${linkCell(r)}</td>
@@ -1151,7 +1172,7 @@ function labelCell(r){
   if(!urls.length) return '<div class="thumb miss">—</div>';
 
   return `<img class="thumb" src="${urls[0]}" alt="Label ${r.order}"
-    onclick="zoom(this.src, 'Order #${r.order}  ·  ${r.trk ? fmtTrk(r.trk) : 'no tracking'}')"
+    onclick="openLabel(${DATA.indexOf(r)})"
     onerror="nextLabel(this, ${JSON.stringify(urls).replace(/"/g,"&quot;")}, '${(r.labelPdf||raw)}')">`;
 }
 
@@ -1177,6 +1198,251 @@ function showTip(ev, html){
 }
 function hideTip(){ document.getElementById("tip").classList.remove("on"); }
 
+
+/* ============================================================
+   FREE OCR PATH — tesseract.js in the browser, no API key.
+
+   The service marker sits in a predictable spot on a FedEx label: the
+   wordmark ("FedEx Express" / "Ground" / "Home Delivery") and the boxed
+   letter are in the right-hand block, roughly 55-100% across and 25-60%
+   down. OCR-ing the whole 4x6 label returns mostly barcode noise, so we
+   crop to that block and upscale it first.
+
+   USPS is easier — its banner spans the top of the label.
+
+   Images are proxied through /api/label-image so the canvas isn't tainted.
+   ============================================================ */
+
+let tesseractReady = null;
+
+function loadTesseract(){
+  if(tesseractReady) return tesseractReady;
+  tesseractReady = new Promise((resolve, reject)=>{
+    if(window.Tesseract) return resolve(window.Tesseract);
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.onload = ()=> resolve(window.Tesseract);
+    s.onerror = ()=> reject(new Error("Couldn't load tesseract.js from the CDN"));
+    document.head.appendChild(s);
+  });
+  return tesseractReady;
+}
+
+function proxied(url){
+  return "/api/label-image?url=" + encodeURIComponent(url);
+}
+
+/* Load the label and return two upscaled crops: the FedEx marker block and
+   the top banner (for USPS). */
+function cropRegions(url){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = ()=>{
+      const W = img.naturalWidth, H = img.naturalHeight;
+      const make = (sx, sy, sw, sh, scale)=>{
+        const c = document.createElement("canvas");
+        c.width = sw * scale; c.height = sh * scale;
+        const ctx = c.getContext("2d");
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+        // hard threshold: label text is black on white, so this kills grey noise
+        const d = ctx.getImageData(0,0,c.width,c.height);
+        for(let i=0;i<d.data.length;i+=4){
+          const lum = (d.data[i]*0.299 + d.data[i+1]*0.587 + d.data[i+2]*0.114);
+          const val = lum > 140 ? 255 : 0;
+          d.data[i]=d.data[i+1]=d.data[i+2]=val;
+        }
+        ctx.putImageData(d,0,0);
+        return c;
+      };
+      resolve({
+        marker: make(W*0.55, H*0.24, W*0.45, H*0.38, 3),   // FedEx wordmark + boxed letter
+        banner: make(0, 0, W, H*0.22, 2),                   // USPS banner / service line
+        service: make(W*0.45, H*0.55, W*0.55, H*0.22, 3)    // "** 2DAY **" etc
+      });
+    };
+    img.onerror = ()=> reject(new Error("Label image wouldn't load"));
+    img.src = proxied(url);
+  });
+}
+
+function serviceFromText(t){
+  const s = (t || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ");
+  if(/USPS|PRIORITY MAIL/.test(s))                 return ["USPS", "high"];
+  if(/\bDHL\b/.test(s))                            return ["DHL", "high"];
+  if(/HOME DELIVERY|HOMEDELIVERY/.test(s))         return ["FedEx Home", "high"];
+  if(/GROUND/.test(s))                             return ["FedEx Ground", "high"];
+  if(/EXPRESS|2DAY|OVERNIGHT|PRIORITY OVERNIGHT/.test(s)) return ["FedEx Express", "high"];
+  // single-letter marker as a weaker signal
+  if(/\bG\b/.test(s) && !/\bE\b/.test(s))         return ["FedEx Ground", "low"];
+  if(/\bH\b/.test(s) && !/\bE\b/.test(s))         return ["FedEx Home", "low"];
+  if(/\bE\b/.test(s))                              return ["FedEx Express", "low"];
+  return [null, null];
+}
+
+async function ocrOne(idx, onProgress){
+  const r = DATA[idx];
+  const raw = /^https?:\/\//i.test(r.label||"") ? r.label
+            : (/^https?:\/\//i.test(r.labelPdf||"") ? r.labelPdf : "");
+  if(!raw) return null;
+
+  const T = await loadTesseract();
+  const crops = await cropRegions(raw);
+
+  // cheapest region first; stop as soon as something reads confidently
+  for(const region of ["marker","service","banner"]){
+    const { data } = await T.recognize(crops[region], "eng", {
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 *"
+    });
+    const [service, conf] = serviceFromText(data.text);
+    if(service && conf === "high"){
+      return { service, confidence: "high", evidence: "ocr:" + region };
+    }
+    if(service && !window.__ocrWeak) window.__ocrWeak = { service, region };
+  }
+
+  const weak = window.__ocrWeak;
+  window.__ocrWeak = null;
+  return weak ? { service: weak.service, confidence: "low", evidence: "ocr:weak" } : null;
+}
+
+/* Batch OCR. Sequential — tesseract is CPU-bound, running several at once
+   just makes the page stutter. Low-confidence results are left unverified
+   so a person checks them rather than trusting a bad read. */
+async function ocrAll(){
+  const btn = document.getElementById("ocr");
+  const todo = DATA.map((r,i)=>[r,i])
+                   .filter(([r])=>(r.carrier === "FedEx — unverified" || r.carrier === "Unknown — check")
+                                   && (r.label || r.labelPdf))
+                   .map(([,i])=>i);
+  if(!todo.length){ setStatus("loading2","Nothing left to classify"); return; }
+
+  btn.disabled = true;
+  let ok = 0, weak = 0, failed = 0;
+
+  for(let n = 0; n < todo.length; n++){
+    const i = todo[n];
+    btn.textContent = "Reading " + (n+1) + " / " + todo.length;
+    try{
+      const got = await ocrOne(i);
+      if(got && got.confidence === "high"){
+        DATA[i].carrier = got.service;
+        DATA[i].read = "label";
+        paintRow(i);
+        ok++;
+        fetch("/api/set-service", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ order: DATA[i].order, service: got.service, tracking: DATA[i].trk })
+        }).catch(()=>{});
+      }else if(got){ weak++; }
+      else { failed++; }
+    }catch(err){
+      failed++;
+      lastReadError = err.message;
+      if(failed === 1) setStatus("err", "OCR problem: " + err.message);
+    }
+    if(n % 5 === 0) scheduleSummary();
+  }
+
+  render();
+  btn.disabled = false;
+  btn.textContent = "Read labels (OCR)";
+  setStatus("loading2", "OCR done — " + ok + " read, " + (weak + failed) +
+    " need a look. Use Classify labels for those.");
+}
+
+/* Manual classification.
+   The marker box on the label says it plainly, so reading it by eye is both
+   faster and more reliable than any inference. One keypress records it; the
+   answer is cached in Neon so each label is only ever read once. */
+const PICKS = [
+  { key: "1", service: "FedEx Express" },
+  { key: "2", service: "FedEx Ground"  },
+  { key: "3", service: "FedEx Home"    },
+  { key: "4", service: "USPS"          },
+  { key: "5", service: "DHL"           },
+];
+
+let lbIdx = -1;   // index into DATA of the row currently open
+
+function unverifiedIdxs(){
+  return DATA.map((r,i)=>[r,i])
+             .filter(([r])=>r.carrier === "FedEx — unverified" || r.carrier === "Unknown — check")
+             .map(([,i])=>i);
+}
+
+function renderPicks(){
+  const wrap = document.getElementById("lbpick");
+  if(lbIdx < 0){ wrap.innerHTML = ""; return; }
+  wrap.innerHTML = '<span class="lbl">This label is</span>' + PICKS.map(p=>{
+    const logo = CARRIER_LOGOS[p.service];
+    const tint = TINTS[p.service] || "#fff";
+    return `<button class="pickbtn" style="--tintc:${tint}" data-svc="${p.service}">
+      ${logo ? `<img src="${logo}" alt="">` : ""}${p.service}<kbd>${p.key}</kbd></button>`;
+  }).join("") + '<button class="pickbtn" data-svc="skip">Skip<kbd>S</kbd></button>';
+
+  wrap.querySelectorAll(".pickbtn").forEach(b=>{
+    b.onclick = ()=> b.dataset.svc === "skip" ? openNextUnverified() : classify(b.dataset.svc);
+  });
+
+  const left = unverifiedIdxs().length;
+  document.getElementById("lbprog").textContent = left ? (left + " left to classify") : "all classified";
+}
+
+async function classify(service){
+  if(lbIdx < 0) return;
+  const r = DATA[lbIdx];
+  const prog = document.getElementById("lbprog");
+
+  r.carrier = service;
+  r.read = "label";
+  paintRow(lbIdx);
+  scheduleSummary();
+  prog.innerHTML = '<span class="saved">' + service + ' saved</span>';
+
+  try{
+    const res = await fetch("/api/set-service", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ order: r.order, service, tracking: r.trk })
+    });
+    if(!res.ok){
+      const b = await res.json().catch(()=>({}));
+      prog.innerHTML = '<span style="color:var(--red)">Not saved — ' + (b.detail || b.error || res.status) + '</span>';
+    }
+  }catch(err){
+    prog.innerHTML = '<span style="color:var(--red)">Not saved — ' + err.message + '</span>';
+  }
+
+  setTimeout(openNextUnverified, 260);
+}
+
+function openNextUnverified(){
+  const list = unverifiedIdxs();
+  const next = list.find(i => i > lbIdx);
+  const target = next !== undefined ? next : list[0];
+  if(target === undefined){
+    document.getElementById("lbprog").innerHTML = '<span class="saved">Nothing left to classify</span>';
+    setTimeout(()=>document.getElementById("lb").classList.remove("on"), 900);
+    return;
+  }
+  openLabel(target);
+}
+window.openNextUnverified = openNextUnverified;
+
+/* open the label for a given DATA index */
+function openLabel(idx){
+  const r = DATA[idx];
+  if(!r) return;
+  const raw = /^https?:\/\//i.test(r.label||"") ? r.label
+            : (/^https?:\/\//i.test(r.labelPdf||"") ? r.labelPdf : "");
+  if(!raw){ lbIdx = idx; zoom("", "Order #" + r.order + " — no label on this order"); return; }
+  lbIdx = idx;
+  const urls = labelFormats(raw);
+  zoom(urls[0], "Order #" + r.order + "  ·  " + (r.trk ? fmtTrk(r.trk) : "no tracking"));
+}
+window.openLabel = openLabel;
+
 window.zoom = function(src, caption){
   const lb = document.getElementById("lb");
   document.getElementById("lbimg").src = src;
@@ -1185,6 +1451,7 @@ window.zoom = function(src, caption){
   lb.classList.remove("zoomed");
   document.getElementById("lbzoom").textContent = "Zoom in";
   lb.classList.add("on");
+  renderPicks();
 };
 document.getElementById("lbx").onclick = ()=>document.getElementById("lb").classList.remove("on");
 document.getElementById("lbzoom").onclick = ()=>{
@@ -1194,7 +1461,12 @@ document.getElementById("lbzoom").onclick = ()=>{
 };
 document.getElementById("lbimg").onclick = ()=>document.getElementById("lbzoom").click();
 document.addEventListener("keydown", e=>{
-  if(e.key === "Escape") document.getElementById("lb").classList.remove("on");
+  const lb = document.getElementById("lb");
+  if(!lb.classList.contains("on")) return;
+  if(e.key === "Escape"){ lb.classList.remove("on"); lbIdx = -1; return; }
+  if(e.key.toLowerCase() === "s"){ e.preventDefault(); openNextUnverified(); return; }
+  const hit = PICKS.find(p => p.key === e.key);
+  if(hit){ e.preventDefault(); classify(hit.service); }
 });
 document.getElementById("lb").onclick = e=>{ if(e.target.id==="lb") e.currentTarget.classList.remove("on"); };
 
@@ -1224,10 +1496,9 @@ async function readOne(idx, btn){
       lastReadError = why || "unreadable";
       if(btn){ btn.textContent = "Retry"; btn.disabled = false; btn.title = lastReadError; }
     }
-  }catch{
-    if(!LIVE){                       // offline prototype: simulate so the UI is demoable
-      service = ["FedEx Express","FedEx Ground","FedEx Home"][Math.floor(Math.random()*3)];
-    }else if(btn){ btn.textContent = "Retry"; btn.disabled = false; }
+  }catch(err){
+    lastReadError = err.message;
+    if(btn){ btn.textContent = "Retry"; btn.disabled = false; btn.title = err.message; }
   }
 
   if(service){
@@ -1260,7 +1531,7 @@ async function readAllUnverified(opts){
 
   const todo = DATA.map((r,i)=>[r,i])
                    .filter(([r])=>r.carrier === "FedEx — unverified" && (r.label || r.labelPdf));
-  const btn = document.getElementById("readall");
+  const btn = { set textContent(v){ setStatus("loading2", v); }, set disabled(v){} };
   if(!todo.length){
     if(!silent){
       btn.textContent = "Nothing to read";
@@ -1302,7 +1573,11 @@ async function readAllUnverified(opts){
   return { ok, failed };
 }
 
-document.getElementById("readall").onclick = ()=>readAllUnverified();
+document.getElementById("ocr").onclick = ()=>ocrAll();
+document.getElementById("classify").onclick = ()=>{
+  lbIdx = -1;
+  openNextUnverified();
+};
 document.getElementById("autoread").onchange = e=>{ if(e.target.checked) readAllUnverified({ silent:true }); };
 
 /* controls */
