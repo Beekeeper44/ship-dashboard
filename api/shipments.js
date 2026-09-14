@@ -22,21 +22,31 @@ function headers() {
   };
 }
 
-// name -> { id, type, required } for the card's native template tags.
-// Metabase requires each parameter to carry the tag's UUID `id`, not just its
-// name, so read the card definition first. Cached for the life of the lambda.
-let TAG_CACHE = null;
+// The card's native template tags plus its SQL. Metabase requires each
+// parameter to carry the tag's UUID `id`, not just its name, so the card
+// definition has to be read first. Cached for the life of the lambda.
+let CARD_CACHE = null;
 
-async function getTemplateTags(base) {
-  if (TAG_CACHE) return TAG_CACHE;
+async function getCard(base) {
+  if (CARD_CACHE) return CARD_CACHE;
   const r = await fetch(`${base}/api/card/${CARD_ID}`, { headers: headers() });
   if (!r.ok) throw new Error(`card_fetch ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const card = await r.json();
-  const tags = card?.dataset_query?.native?.['template-tags'] || {};
-  TAG_CACHE = Object.fromEntries(
-    Object.entries(tags).map(([name, t]) => [name, { id: t.id, type: t.type, required: !!t.required }])
-  );
-  return TAG_CACHE;
+  const native = card?.dataset_query?.native || {};
+  const raw = native['template-tags'] || {};
+  CARD_CACHE = {
+    sql: native.query || '',
+    tags: Object.fromEntries(
+      Object.entries(raw).map(([name, t]) => [name, {
+        id: t.id,
+        type: t.type,                       // text | number | date | dimension
+        widgetType: t['widget-type'] || null, // set on field filters
+        required: !!t.required,
+        default: t.default ?? null,
+      }])
+    ),
+  };
+  return CARD_CACHE;
 }
 
 function paramType(tagType) {
@@ -50,8 +60,11 @@ function paramType(tagType) {
 // end. Falls back to positional order when there are exactly two date tags.
 // A tag we fail to match is a silent zero-row bug, so this also reports what
 // it matched via ?debug=1 and the X-Sent-Params header.
+const isDateTag = (t) =>
+  t.type === 'date' || (t.type === 'dimension' && String(t.widgetType || '').startsWith('date'));
+
 function resolveDateTags(tags) {
-  const dates = Object.entries(tags).filter(([, t]) => t.type === 'date');
+  const dates = Object.entries(tags).filter(([, t]) => isDateTag(t));
   let startName = null;
   let endName = null;
 
@@ -88,20 +101,39 @@ export default async function handler(req, res) {
     });
   }
 
-  const { start, end, debug, fresh } = req.query;
+  const { start, end, debug, probe, fresh } = req.query;
 
-  let tags;
+  let card;
   try {
-    tags = await getTemplateTags(BASE);
+    card = await getCard(BASE);
   } catch (err) {
     return res.status(502).json({ error: 'card_definition_failed', detail: String(err) });
   }
+  const tags = card.tags;
 
   const today = new Date().toLocaleDateString('en-CA');
   const { startName, endName } = resolveDateTags(tags);
   const parameters = [];
 
   for (const [name, tag] of Object.entries(tags)) {
+    // A date field filter is a *dimension*, not a variable. Sending it as a
+    // variable is silently ignored by Metabase — the query runs with the filter
+    // unset and you get the card's own default window back, which is exactly
+    // what "the range picker does nothing" looks like.
+    if (isDateTag(tag) && tag.type === 'dimension') {
+      if (name !== startName && name !== endName) continue;
+      if (name === endName && startName) continue;      // one dimension covers both ends
+      const from = start || today;
+      const to = end || today;
+      parameters.push({
+        id: tag.id,
+        type: 'date/all-options',
+        target: ['dimension', ['template-tag', name]],
+        value: from === to ? from : `${from}~${to}`,
+      });
+      continue;
+    }
+
     let value;
     if (name === startName) value = start || (tag.required ? today : undefined);
     else if (name === endName) value = end || (tag.required ? today : undefined);
@@ -134,6 +166,47 @@ export default async function handler(req, res) {
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
       unfilled,
+      // If the SQL pins the window itself — CURRENT_DATE, GETDATE(),
+      // DATEADD(day,-1,...) outside a {{tag}} — no parameter can move it.
+      sqlDatePins: (card.sql.match(/\b(CURRENT_DATE|CURRENT_TIMESTAMP|GETDATE\(\)|SYSDATE|NOW\(\)|TODAY\(\))\b/gi) || []),
+      sqlHasDateTags: /\{\{\s*(start|end|from|to)[a-z_]*\s*\}\}/i.test(card.sql),
+      sql: card.sql.slice(0, 4000),
+    });
+  }
+
+  // /api/shipments?probe=1&start=…&end=… runs the card twice — once with the
+  // parameters, once with none — and reports the date span that came back.
+  // If both spans are identical, the parameters are not moving the query and
+  // the window is pinned inside the SQL.
+  if (probe) {
+    const run = async (params) => {
+      const r = await fetch(`${BASE}/api/card/${CARD_ID}/query/json`, {
+        method: 'POST', headers: headers(), body: JSON.stringify({ parameters: params }),
+      });
+      if (!r.ok) return { ok: false, status: r.status, detail: (await r.text()).slice(0, 300) };
+      const rows = await r.json();
+      if (!Array.isArray(rows)) return { ok: false, detail: 'unexpected_shape' };
+      const stamps = rows
+        .map((x) => x.COMPLETED_AT || x.completed_at || x.Completed_At)
+        .filter(Boolean)
+        .map(String)
+        .sort();
+      return {
+        ok: true,
+        rows: rows.length,
+        earliest: stamps[0] || null,
+        latest: stamps[stamps.length - 1] || null,
+      };
+    };
+    const [withParams, withoutParams] = await Promise.all([run(parameters), run([])]);
+    return res.status(200).json({
+      requested: { start: start || null, end: end || null },
+      sentParameters: parameters,
+      withParams,
+      withoutParams,
+      verdict: withParams.ok && withoutParams.ok && withParams.rows === withoutParams.rows
+        ? 'parameters had no effect — the window is set inside the card, not by the request'
+        : 'parameters changed the result — the range is reaching the card',
     });
   }
 
