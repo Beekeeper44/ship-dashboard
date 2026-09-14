@@ -1201,6 +1201,8 @@ document.getElementById("lb").onclick = e=>{ if(e.target.id==="lb") e.currentTar
 /* Resolve one label. Calls /api/read-label, which fetches the label image and
    asks Claude which service marker it shows. Falls back to a local guess only
    when the route isn't there (opening this file directly). */
+let lastReadError = "";
+
 async function readOne(idx, btn){
   const r = DATA[idx];
   if(!r || r.read === "label") return;
@@ -1214,8 +1216,14 @@ async function readOne(idx, btn){
       body: JSON.stringify({ order: r.order, labelUrl: r.labelPdf || r.label, tracking: r.trk })
     });
     const body = await res.json();
-    if(res.ok && body.service && body.service !== "UNREADABLE") service = body.service;
-    else if(btn){ btn.textContent = "Retry"; btn.disabled = false; btn.title = body.error || body.service || "unreadable"; }
+    if(res.ok && body.service && body.service !== "UNREADABLE"){
+      service = body.service;
+    }else{
+      const why = [body.error, body.hint, body.detail && (body.detail.message || JSON.stringify(body.detail))]
+                    .filter(Boolean).join(" — ").slice(0,300);
+      lastReadError = why || "unreadable";
+      if(btn){ btn.textContent = "Retry"; btn.disabled = false; btn.title = lastReadError; }
+    }
   }catch{
     if(!LIVE){                       // offline prototype: simulate so the UI is demoable
       service = ["FedEx Express","FedEx Ground","FedEx Home"][Math.floor(Math.random()*3)];
@@ -1287,8 +1295,9 @@ async function readAllUnverified(opts){
   setTimeout(()=>{ btn.textContent = "Read unverified labels"; }, 4000);
 
   // If every attempt failed, say so once rather than leaving it ambiguous
-  if(ok === 0 && failed > 0 && LIVE){
-    setStatus("err", "Couldn't read any labels (" + failed + " tried) — check /api/read-label");
+  if(ok === 0 && failed > 0){
+    setStatus("err", "Couldn't read any labels (" + failed + " tried). " +
+      (lastReadError || "") + "  Try /api/read-label for a config check.");
   }
   return { ok, failed };
 }
