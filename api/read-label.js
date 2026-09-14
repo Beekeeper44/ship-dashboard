@@ -22,15 +22,18 @@ Supporting signals: FedEx Express labels usually print a service line such as
 "2DAY", "PRIORITY OVERNIGHT" or "STANDARD OVERNIGHT". FedEx Ground and Home
 Delivery labels carry a second long barcode number beginning 96.
 
+Also read the tracking number printed next to "TRK#" (digits only, no spaces).
+That lets us confirm the label belongs to the order we think it does.
+
 Reply with ONLY a JSON object, no other text:
-{"service":"<one of the values above, or UNREADABLE>","confidence":"high|medium|low","evidence":"<a few words naming what you saw>"}`;
+{"service":"<one of the values above, or UNREADABLE>","confidence":"high|medium|low","tracking":"<digits, or empty>","evidence":"<a few words naming what you saw>"}`;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'method_not_allowed' });
   }
 
-  const { order, labelUrl } = req.body || {};
+  const { order, labelUrl, tracking } = req.body || {};
   if (!order || !labelUrl) {
     return res.status(400).json({ error: 'missing_params', detail: 'order and labelUrl are required' });
   }
@@ -124,6 +127,21 @@ export default async function handler(req, res) {
     parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
   } catch {
     return res.status(500).json({ error: 'unparseable_response', raw: text.slice(0, 300) });
+  }
+
+  // Guard: if the label's printed tracking number doesn't match the order's,
+  // the label URL points at a different shipment. Don't record the service.
+  if (tracking && parsed.tracking) {
+    const a = String(tracking).replace(/\D/g, '');
+    const b = String(parsed.tracking).replace(/\D/g, '');
+    if (a && b && a !== b) {
+      return res.status(409).json({
+        error: 'tracking_mismatch',
+        detail: `Label shows ${b} but the order's tracking is ${a} — the label URL may point at the wrong shipment.`,
+        service: parsed.service,
+        labelTracking: b,
+      });
+    }
   }
 
   if (parsed.service && parsed.service !== 'UNREADABLE') {

@@ -83,7 +83,19 @@ marker box on the label is the answer:
 | USPS banner | USPS Priority Mail |
 
 `api/read-label.js` fetches the label PNG and asks Claude which marker it shows,
-then caches the answer. Roughly a cent per label, once per shipment.
+then caches the answer in Neon. Roughly a cent per label, **once per shipment** —
+a label that has been read is never read again, so the ongoing cost is only new
+shipments, not the whole history.
+
+**Auto-read** is on by default: whenever data loads, any rows still showing
+*FedEx — unverified* are read in the background, four at a time. Turn it off with
+the toggle next to the buttons if you'd rather resolve them manually, or press
+*Read unverified labels* to run a pass on demand.
+
+The model also reads back the tracking number printed on the label. If it
+doesn't match the order's tracking number the result is rejected with
+`tracking_mismatch` rather than recorded — that catches label URLs pointing at
+the wrong shipment.
 
 **The better fix is upstream.** Arta returns `carrier` and `service_level` in
 the shipment response, and we already store `orders.return_shipment_id`. If

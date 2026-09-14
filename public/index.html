@@ -46,6 +46,18 @@
   .meta{margin-left:auto;text-align:right;color:#ffffff;font-size:14px;line-height:1.8;white-space:nowrap}
   .meta .live{color:var(--green)}
 
+  /* ---------- auto-read toggle ---------- */
+  .toggle{display:inline-flex;align-items:center;gap:9px;padding:11px 15px;border:1px solid var(--line);
+    border-radius:5px;background:#0d0d0d;cursor:pointer;font-size:13px;letter-spacing:.8px;
+    text-transform:uppercase;color:#fff;user-select:none;white-space:nowrap}
+  .toggle:hover{border-color:#333}
+  .toggle input{appearance:none;width:34px;height:19px;border-radius:19px;background:#2a2a2a;
+    position:relative;cursor:pointer;transition:background .15s;flex:0 0 auto;margin:0}
+  .toggle input::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;
+    border-radius:50%;background:#fff;transition:transform .15s}
+  .toggle input:checked{background:var(--green)}
+  .toggle input:checked::after{transform:translateX(15px)}
+
   /* ---------- data status ---------- */
   .status{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:6px;
     margin-bottom:16px;font-size:14px;border:1px solid}
@@ -329,6 +341,10 @@
     <button class="btn" id="clear">Clear</button>
     <button class="btn" id="csv">Export CSV</button>
     <button class="btn" id="readall">Read unverified labels</button>
+    <label class="toggle" title="Read labels automatically whenever data loads">
+      <input type="checkbox" id="autoread" checked>
+      <span>Auto-read labels</span>
+    </label>
   </div>
 
   <!-- ================= stats ================= -->
@@ -725,11 +741,20 @@ async function loadLive(){
     rebuildEmployees();
     render();
     setStatus("live", body.length + " shipments");
+    maybeAutoRead();
     return true;
   }catch(err){
     setStatus("offline", err.message);
     return false;
   }
+}
+
+/* Read any unverified labels as soon as data lands, unless the toggle is off.
+   Runs in the background — the table is already usable while it works. */
+function maybeAutoRead(){
+  const on = document.getElementById("autoread");
+  if(!on || !on.checked) return;
+  setTimeout(()=>readAllUnverified({ silent: true }), 250);
 }
 
 function setStatus(kind, detail){
@@ -1186,7 +1211,7 @@ async function readOne(idx, btn){
     const res = await fetch("/api/read-label", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ order: r.order, labelUrl: r.labelPdf || r.label })
+      body: JSON.stringify({ order: r.order, labelUrl: r.labelPdf || r.label, tracking: r.trk })
     });
     const body = await res.json();
     if(res.ok && body.service && body.service !== "UNREADABLE") service = body.service;
@@ -1218,14 +1243,28 @@ function paintRow(idx){
 }
 
 /* Batch read. Runs a few at a time so the browser stays responsive and we
-   don't hammer the API, with progress on the button and one summary repaint. */
-document.getElementById("readall").onclick = async ()=>{
-  const btn = document.getElementById("readall");
-  const todo = DATA.map((r,i)=>[r,i]).filter(([r])=>r.carrier==="FedEx — unverified" && (r.label||r.labelPdf));
-  if(!todo.length){ btn.textContent = "Nothing to read"; setTimeout(()=>btn.textContent="Read unverified labels",1800); return; }
+   don't hammer the API, with progress on the button and one repaint at the end. */
+let batchRunning = false;
 
+async function readAllUnverified(opts){
+  const silent = opts && opts.silent;
+  if(batchRunning) return;
+
+  const todo = DATA.map((r,i)=>[r,i])
+                   .filter(([r])=>r.carrier === "FedEx — unverified" && (r.label || r.labelPdf));
+  const btn = document.getElementById("readall");
+  if(!todo.length){
+    if(!silent){
+      btn.textContent = "Nothing to read";
+      setTimeout(()=>{ btn.textContent = "Read unverified labels"; }, 1800);
+    }
+    return;
+  }
+
+  batchRunning = true;
   btn.disabled = true;
-  let done = 0, ok = 0;
+
+  let done = 0, ok = 0, failed = 0;
   const CONCURRENCY = 4;
   const queue = todo.slice();
 
@@ -1233,18 +1272,29 @@ document.getElementById("readall").onclick = async ()=>{
     while(queue.length){
       const [, i] = queue.shift();
       const got = await readOne(i, null);
-      if(got) ok++;
+      got ? ok++ : failed++;
       done++;
       btn.textContent = "Reading " + done + " / " + todo.length;
+      if(done % 8 === 0) scheduleSummary();      // periodic refresh so it feels live
     }
   }
   await Promise.all(Array.from({length: Math.min(CONCURRENCY, todo.length)}, worker));
 
   render();
+  batchRunning = false;
   btn.disabled = false;
-  btn.textContent = ok === todo.length ? "Read unverified labels" : ("Read " + ok + " of " + todo.length);
+  btn.textContent = failed ? ("Read " + ok + " of " + todo.length) : "Read unverified labels";
   setTimeout(()=>{ btn.textContent = "Read unverified labels"; }, 4000);
-};
+
+  // If every attempt failed, say so once rather than leaving it ambiguous
+  if(ok === 0 && failed > 0 && LIVE){
+    setStatus("err", "Couldn't read any labels (" + failed + " tried) — check /api/read-label");
+  }
+  return { ok, failed };
+}
+
+document.getElementById("readall").onclick = ()=>readAllUnverified();
+document.getElementById("autoread").onchange = e=>{ if(e.target.checked) readAllUnverified({ silent:true }); };
 
 /* controls */
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
