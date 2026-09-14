@@ -45,6 +45,37 @@ function paramType(tagType) {
   return 'category';
 }
 
+// The card's variables are not guaranteed to be called start_date / end_date.
+// Match on shape instead: a date-typed tag whose name looks like a start or an
+// end. Falls back to positional order when there are exactly two date tags.
+// A tag we fail to match is a silent zero-row bug, so this also reports what
+// it matched via ?debug=1 and the X-Sent-Params header.
+function resolveDateTags(tags) {
+  const dates = Object.entries(tags).filter(([, t]) => t.type === 'date');
+  let startName = null;
+  let endName = null;
+
+  for (const [name] of dates) {
+    const n = name.toLowerCase();
+    if (!startName && /(^|_)(start|from|begin|since|after)/.test(n)) startName = name;
+    else if (!endName && /(^|_)(end|to|thru|through|until|before)/.test(n)) endName = name;
+  }
+  if (!startName && !endName && dates.length === 2) {
+    startName = dates[0][0];
+    endName = dates[1][0];
+  }
+  return { startName, endName };
+}
+
+// Required tags that aren't dates still need a value or Metabase refuses to
+// run. Never send 0 for a max — `cards_shipped <= 0` matches nothing, which
+// looks exactly like "the query returned no rows".
+function fallbackValue(name, tag) {
+  const n = name.toLowerCase();
+  if (tag.type === 'number') return /max/.test(n) ? 1000000 : 0;
+  return '';
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'method_not_allowed' });
@@ -66,20 +97,15 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: 'card_definition_failed', detail: String(err) });
   }
 
-  // /api/shipments?debug=1 shows exactly which variables the card declares
-  if (debug) return res.status(200).json({ card: CARD_ID, tags });
-
-  // Only send values for tags the card actually declares. Anything marked
-  // required gets a value even if the caller didn't supply one, otherwise
-  // Metabase refuses to run.
   const today = new Date().toLocaleDateString('en-CA');
+  const { startName, endName } = resolveDateTags(tags);
   const parameters = [];
 
   for (const [name, tag] of Object.entries(tags)) {
     let value;
-    if (name === 'start_date') value = start || (tag.required ? today : undefined);
-    else if (name === 'end_date') value = end || (tag.required ? today : undefined);
-    else if (tag.required) value = tag.type === 'number' ? 0 : '';
+    if (name === startName) value = start || (tag.required ? today : undefined);
+    else if (name === endName) value = end || (tag.required ? today : undefined);
+    else if (tag.required) value = fallbackValue(name, tag);
 
     if (value !== undefined && value !== null && value !== '') {
       parameters.push({
@@ -89,6 +115,26 @@ export default async function handler(req, res) {
         value,
       });
     }
+  }
+
+  // Anything the card declares that we are not filling. If a date tag shows up
+  // here, that is the reason a range picked in the UI has no effect: Metabase
+  // falls back to the tag's own default and you get its rows, not yours.
+  const unfilled = Object.keys(tags).filter(
+    (n) => !parameters.some((p) => p.target[1][1] === n)
+  );
+
+  // /api/shipments?debug=1 shows the card's variables, which ones were matched
+  // to the date range, and exactly what would be sent.
+  if (debug) {
+    return res.status(200).json({
+      card: CARD_ID,
+      tags,
+      matched: { start: startName, end: endName },
+      requested: { start: start || null, end: end || null },
+      sentParameters: parameters,
+      unfilled,
+    });
   }
 
   let raw;
@@ -131,7 +177,7 @@ export default async function handler(req, res) {
     return undefined;
   };
 
-  let rows = raw.map((r) => {
+  const rows = raw.map((r) => {
     const who = pick(r, 'SHIPPED_BY') ?? '';
     const label = pick(r, 'LABEL_IMAGE', 'LABEL_URL') || '';
     return {
@@ -146,26 +192,6 @@ export default async function handler(req, res) {
       gap: typeof who === 'string' && who.startsWith('Unmapped user'),
     };
   });
-
-  // Clamp to the requested range.
-  //
-  // Metabase should already have applied start_date / end_date, but a template
-  // tag that isn't wired the way we expect would silently return everything —
-  // including today when the user asked for last week. Parsing the timestamps
-  // here makes the range exact regardless of how they come back.
-  let dropped = 0;
-  if (start || end) {
-    const lo = start ? Date.parse(start + 'T00:00:00') : -Infinity;
-    const hi = end ? Date.parse(end + 'T23:59:59.999') : Infinity;
-    const before = rows.length;
-    rows = rows.filter((r) => {
-      if (!r.ts) return false;
-      const t = Date.parse(r.ts);
-      if (Number.isNaN(t)) return true;      // unparseable — keep rather than drop
-      return t >= lo && t <= hi;
-    });
-    dropped = before - rows.length;
-  }
 
   // Merge in service levels already read off labels, and any employee names
   // that don't resolve in public.users
@@ -203,9 +229,8 @@ export default async function handler(req, res) {
     ? 'no-store, no-cache, must-revalidate'
     : 's-maxage=60, stale-while-revalidate=120');
   res.setHeader('X-Cache-Store', process.env.DATABASE_URL ? 'neon' : 'none');
-  res.setHeader('X-Range', [start || 'any', end || 'any'].join('..'));
-  res.setHeader('X-Rows', String(rows.length));
-  res.setHeader('X-Dropped-Outside-Range', String(dropped));
+  res.setHeader('X-Sent-Params', JSON.stringify(parameters.map((p) => [p.target[1][1], p.value])));
+  res.setHeader('X-Unfilled-Tags', unfilled.join(',') || 'none');
   return res.status(200).json(rows);
 }
 

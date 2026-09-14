@@ -326,7 +326,7 @@
   <!-- ================= tabs ================= -->
   <div class="tabs">
     <button class="tab on" data-view="today">Today <span class="n" id="t-today">0</span></button>
-    <button class="tab" data-view="week">Date range <span class="n" id="t-week">0</span></button>
+    <button class="tab" data-view="week">This week <span class="n" id="t-week">0</span></button>
     <button class="tab" data-view="unverified">Unverified service <span class="n" id="t-unver">0</span></button>
     <button class="tab" data-view="notrack">No tracking <span class="n" id="t-notrk">0</span></button>
     <button class="tab" data-view="team">Team history <span class="n" id="t-team">0</span></button>
@@ -413,7 +413,7 @@
   <div class="panel">
     <div class="phead">
       <span class="t">Shipments · <span id="p-count">0</span></span>
-      <span class="r" id="p-range">source: ship_card operation logs · one row per order</span>
+      <span class="r">source: ship_card operation logs · one row per order</span>
     </div>
     <div class="scroll">
       <table>
@@ -760,24 +760,23 @@ function showEmployee(name){
 }
 
 function viewRows(){
-  // The date range comes from the date fields only — the tabs set those rather
-  // than filtering on top of them, so a custom range always wins.
-  if(view === "unverified") return DATA.filter(r=>r.carrier === "FedEx — unverified" || r.carrier === "Unknown — check");
-  if(view === "notrack")    return DATA.filter(r=>!r.trk);
+  if(view==="today")      return DATA.filter(r=>day(r)===TODAY);
+  if(view==="week")       return DATA.filter(r=>day(r)>=weekAgo());
+  if(view==="unverified") return DATA.filter(r=>r.carrier==="FedEx — unverified");
+  if(view==="notrack")    return DATA.filter(r=>!r.trk);
   return DATA;
 }
 
 function filtered(){
-  // Dates are applied by Metabase when the data is fetched, so they are NOT
-  // re-applied here. Filtering twice meant any difference in timestamp format
-  // between Snowflake and the browser silently emptied the table.
-  const emp=v("f-emp"), ord=v("f-order").trim(),
+  const s=v("f-start"), e=v("f-end"), emp=v("f-emp"), ord=v("f-order").trim(),
         trk=v("f-trk").replace(/\D/g,""), car=v("f-car"),
         mn=v("f-min"), mx=v("f-max");
   return viewRows().filter(r=>{
+    if(s && day(r)<s) return false;
+    if(e && day(r)>e) return false;
     if(emp && r.who!==emp) return false;
-    if(ord && !String(r.order).includes(ord)) return false;
-    if(trk && !String(r.trk).replace(/\D/g,"").includes(trk)) return false;
+    if(ord && !r.order.includes(ord)) return false;
+    if(trk && !r.trk.replace(/\D/g,"").includes(trk)) return false;
     if(car && r.carrier!==car) return false;
     if(mn!=="" && r.cards < +mn) return false;
     if(mx!=="" && r.cards > +mx) return false;
@@ -832,7 +831,7 @@ function render(){
 
   // tabs
   document.getElementById("t-today").textContent = DATA.filter(r=>day(r)===TODAY).length;
-  document.getElementById("t-week").textContent  = DATA.length;
+  document.getElementById("t-week").textContent  = DATA.filter(r=>day(r)>=weekAgo()).length;
   document.getElementById("t-unver").textContent = DATA.filter(r=>r.carrier==="FedEx — unverified").length;
   document.getElementById("t-notrk").textContent = DATA.filter(r=>!r.trk).length;
 
@@ -916,10 +915,6 @@ function render(){
   document.querySelectorAll("#rows .namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
   document.getElementById("empty").hidden = rows.length>0;
   document.getElementById("p-count").textContent = rows.length;
-  const ps = v("f-start"), pe = v("f-end");
-  document.getElementById("p-range").textContent =
-    (ps && pe ? (ps === pe ? ps : ps + " to " + pe) + " · " : "") +
-    "ship_card operation logs · one row per order";
   document.getElementById("t-team").textContent = new Set(DATA.map(r=>r.who)).size;
 
   const team = view==="team";
@@ -930,11 +925,7 @@ function render(){
   if(team) renderTeam();
   document.getElementById("m-orders").textContent = DATA.length;
   document.getElementById("m-cards").textContent  = DATA.reduce((n,r)=>n+r.cards,0).toLocaleString();
-  const rs = v("f-start"), re_ = v("f-end");
-  document.getElementById("m-asof").textContent = (rs && re_ && rs !== re_)
-    ? (new Date(rs+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"}) + " – " +
-       new Date(re_+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}))
-    : new Date((rs||TODAY)+"T12:00:00")
+  document.getElementById("m-asof").textContent   = new Date(TODAY+"T12:00:00")
     .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
 
   document.querySelectorAll("th[data-k]").forEach(th=>{
@@ -1509,22 +1500,9 @@ document.getElementById("classify").onclick = ()=>{
 };
 
 /* controls */
-document.querySelectorAll(".tab").forEach(t=>t.onclick=async ()=>{
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
-  t.classList.add("on");
-  view = t.dataset.view;
-
-  const s = document.getElementById("f-start"), e = document.getElementById("f-end");
-  if(view === "today"){        // narrow the range to today and refetch
-    s.value = TODAY; e.value = TODAY;
-    await loadLive();
-  }else if(view === "week"){
-    s.value = weekAgo(); e.value = TODAY;
-    await loadLive();
-  }
-  // unverified / notrack / team keep whatever range is set — they filter on
-  // status, not on dates
-  render();
+  t.classList.add("on"); view=t.dataset.view; render();
 });
 document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
   const k=th.dataset.k;
@@ -1556,8 +1534,7 @@ let typeTimer;
 });
 document.getElementById("f-car").onchange = render;
 ["f-start","f-end"].forEach(id=>document.getElementById(id).onchange = ()=>{
-  // dates only take effect via the query, so always refetch
-  loadLive();
+  if(LIVE) loadLive(); else render();
 });
 document.getElementById("f-emp").onchange = e => {
   if(e.target.value) showEmployee(e.target.value);
