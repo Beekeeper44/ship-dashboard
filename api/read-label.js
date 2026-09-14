@@ -46,25 +46,41 @@ export default async function handler(req, res) {
     // no cache configured — continue and just don't persist
   }
 
-  // Arta serves PDFs by default; ask for the PNG, which vision handles.
-  const url = labelUrl.replace('format=pdf_4_x_6', 'format=png');
+  // Arta serves PDFs by default. We don't know their exact PNG format string,
+  // so try the likely ones and keep the first that returns an actual image.
+  const base = labelUrl.replace(/\?format=.*$/, '');
+  // png_4_x_6 verified working against Arta (2026-09-14); the rest are fallbacks.
+  const candidates = [
+    base + '?format=png_4_x_6',
+    labelUrl.replace('format=pdf_4_x_6', 'format=png_4_x_6'),
+    base + '?format=png',
+    base,
+    labelUrl,
+  ].filter((u, i, a) => u && a.indexOf(u) === i);
 
-  let b64, mediaType;
-  try {
-    const img = await fetch(url);
-    if (!img.ok) {
-      return res.status(502).json({ error: 'label_fetch_failed', status: img.status });
+  let b64, mediaType, url, tried = [];
+  for (const cand of candidates) {
+    try {
+      const img = await fetch(cand);
+      const ct = (img.headers.get('content-type') || '').split(';')[0];
+      tried.push({ url: cand, status: img.status, type: ct });
+      if (!img.ok) continue;
+      if (!ct.startsWith('image/')) continue;   // PDFs and error pages skipped
+      mediaType = ct;
+      url = cand;
+      b64 = Buffer.from(await img.arrayBuffer()).toString('base64');
+      break;
+    } catch (err) {
+      tried.push({ url: cand, error: String(err) });
     }
-    mediaType = (img.headers.get('content-type') || 'image/png').split(';')[0];
-    if (mediaType === 'application/pdf') {
-      return res.status(415).json({
-        error: 'pdf_not_supported',
-        hint: 'Request the label with format=png — the query exposes this as LABEL_IMAGE.',
-      });
-    }
-    b64 = Buffer.from(await img.arrayBuffer()).toString('base64');
-  } catch (err) {
-    return res.status(502).json({ error: 'label_unreachable', detail: String(err) });
+  }
+
+  if (!b64) {
+    return res.status(502).json({
+      error: 'no_image_format_worked',
+      hint: 'None of the Arta format variants returned an image. Check tried[] for what each returned.',
+      tried,
+    });
   }
 
   let text;

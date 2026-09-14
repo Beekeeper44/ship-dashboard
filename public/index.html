@@ -245,10 +245,27 @@
   .empty{padding:56px 20px;text-align:center;color:var(--ink-dim);font-size:13px}
 
   /* lightbox */
-  .lb{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:50;padding:28px}
+  .lb{position:fixed;inset:0;background:rgba(0,0,0,.93);display:none;align-items:center;
+      justify-content:center;z-index:95;padding:20px;flex-direction:column;gap:16px}
   .lb.on{display:flex}
-  .lb img{max-width:min(520px,92vw);max-height:90vh;background:#fff;border-radius:4px}
-  .lb .x{position:absolute;top:18px;right:22px;color:var(--ink-dim);font-size:24px;cursor:pointer;background:none;border:none}
+  .lb .frame{
+    background:#fff;border-radius:6px;padding:10px;box-shadow:0 30px 90px rgba(0,0,0,.8);
+    max-height:calc(100vh - 120px);display:flex;align-items:center;justify-content:center;
+    overflow:auto;
+  }
+  .lb img{
+    display:block;background:#fff;border-radius:3px;
+    height:min(calc(100vh - 150px), 1100px);width:auto;max-width:calc(100vw - 80px);
+    object-fit:contain;transition:height .12s;
+  }
+  .lb.zoomed .frame{align-items:flex-start}
+  .lb.zoomed img{height:auto;width:min(calc(100vw - 80px), 900px);max-width:none;cursor:zoom-out}
+  .lb img{cursor:zoom-in}
+  .lb .bar{display:flex;align-items:center;gap:12px;color:#fff;font-size:14px}
+  .lb .bar b{font-weight:700}
+  .lb .x{position:absolute;top:18px;right:24px;color:#fff;font-size:30px;cursor:pointer;
+    background:none;border:none;line-height:1;padding:4px 10px}
+  .lb .x:hover{color:var(--green)}
 
   .legend{margin-top:18px;border:1px solid var(--line);border-radius:5px;padding:18px 20px;color:#ffffff;font-size:14.5px;line-height:1.8;max-width:100ch}
   .legend b{color:var(--ink)}
@@ -387,8 +404,17 @@
 </div>
 
 <div class="tip" id="tip"></div>
+<div class="lb" id="lb">
+  <button class="x" id="lbx">&#10005;</button>
+  <div class="frame"><img id="lbimg" alt="Shipping label"></div>
+  <div class="bar">
+    <span id="lbcap"></span>
+    <button class="btn" id="lbzoom">Zoom in</button>
+    <a class="btn" id="lbopen" target="_blank" rel="noopener">Open full size &#8599;</a>
+  </div>
+</div>
 <div class="modal" id="modal"><div class="mbox" id="mbox"></div></div>
-<div class="lb" id="lb"><button class="x" id="lbx">✕</button><img id="lbimg" alt="Shipping label"></div>
+
 
 <script>
 /* ============================================================
@@ -959,6 +985,13 @@ function chip(c){
   return `<span class="car ${CLS[c]||"c-unknown"}">${mk}${c}</span>`;
 }
 
+let summaryPending = false;
+function scheduleSummary(){
+  if(summaryPending) return;
+  summaryPending = true;
+  requestAnimationFrame(()=>{ summaryPending = false; render(); });
+}
+
 function render(){
   const rows = filtered();
 
@@ -1015,17 +1048,18 @@ function render(){
   }).join("");
 
   document.querySelectorAll(".ctile").forEach(t=>t.onclick=()=>{
-    const c=t.dataset.car;
-    document.getElementById("f-car").value = (v("f-car")===c) ? "" : c;
-    render();
+    const c = t.dataset.car;
+    const next = (v("f-car")===c) ? "" : c;
+    document.getElementById("f-car").value = next;
+    // paint the selection instantly, then do the filtering work
+    document.querySelectorAll(".ctile").forEach(x=>x.classList.toggle("on", !!next && x.dataset.car===next));
+    requestAnimationFrame(render);
   });
 
   // table
   document.getElementById("rows").innerHTML = rows.map((r,i)=>`
-    <tr>
-      <td>${r.label
-        ? `<img class="thumb" src="${labelSrc(r)}" alt="Label ${r.order}" onclick="zoom('${labelSrc(r)}')" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb miss',textContent:'—'}))">`
-        : `<div class="thumb miss">—</div>`}</td>
+    <tr data-idx="${DATA.indexOf(r)}">
+      <td>${labelCell(r)}</td>
       <td><button class="namebtn${r.gap?" gap":""}" data-emp="${r.who}">${r.who}</button></td>
       <td>${r.orderUrl
             ? `<a class="lnk mono" href="${r.orderUrl}" target="_blank" rel="noopener">#${r.order}</a>`
@@ -1038,7 +1072,7 @@ function render(){
             : '<span class="dim">—</span>'}</td>
       <td>${chip(r.carrier)}</td>
       <td>${r.read==="label" ? '<span class="src read">read from label</span>'
-            : r.read==="pending" ? `<button class="readbtn" onclick="readOne(${DATA.indexOf(r)})">Read label</button>`
+            : r.read==="pending" ? `<button class="readbtn" onclick="readOne(${DATA.indexOf(r)}, this)">Read label</button>`
             : '<span class="src">—</span>'}</td>
       <td class="dim mono">${fmtTs(r.ts)}</td>
       <td>${linkCell(r)}</td>
@@ -1068,6 +1102,44 @@ function render(){
 }
 
 /* label image: in production this is the order's LABEL_IMAGE url */
+/* Label thumbnail.
+   Arta serves labels as PDF by default; the image variant is a different
+   ?format= value. We don't hardcode one guess — try them in order and let the
+   browser fall through onerror. If none render, show a link to the PDF rather
+   than a broken icon. */
+function labelFormats(u){
+  if(!u) return [];
+  const base = u.replace(/\?format=.*$/, "");
+  // png_4_x_6 confirmed working against Arta; the rest are fallbacks.
+  return [...new Set([
+    base + "?format=png_4_x_6",
+    u.replace("format=pdf_4_x_6","format=png_4_x_6"),
+    base + "?format=png",
+    base
+  ])].filter(Boolean);
+}
+
+function labelCell(r){
+  if(!r.label && !r.labelPdf) return '<div class="thumb miss">—</div>';
+  const raw = r.label || r.labelPdf;
+  const urls = labelFormats(raw);
+  if(!urls.length) return '<div class="thumb miss">—</div>';
+
+  return `<img class="thumb" src="${urls[0]}" alt="Label ${r.order}"
+    onclick="zoom(this.src, 'Order #${r.order}  ·  ${r.trk ? fmtTrk(r.trk) : 'no tracking'}')"
+    onerror="nextLabel(this, ${JSON.stringify(urls).replace(/"/g,"&quot;")}, '${(r.labelPdf||raw)}')">`;
+}
+
+/* advance through the format candidates, then degrade to a link */
+window.nextLabel = function(img, urls, pdf){
+  const i = (+img.dataset.i || 0) + 1;
+  if(i < urls.length){ img.dataset.i = i; img.src = urls[i]; return; }
+  const a = document.createElement("a");
+  a.className = "lnk"; a.href = pdf; a.target = "_blank"; a.rel = "noopener";
+  a.textContent = "label"; a.title = "Open the label PDF";
+  img.replaceWith(a);
+};
+
 function labelSrc(r){ return "data:image/svg+xml;utf8," + encodeURIComponent(fakeLabel(r)); }
 function fakeLabel(r){
   const m = MARKER[r.carrier] || "?";
@@ -1102,20 +1174,98 @@ function showTip(ev, html){
 }
 function hideTip(){ document.getElementById("tip").classList.remove("on"); }
 
-window.zoom = src => { document.getElementById("lbimg").src=src; document.getElementById("lb").classList.add("on"); };
+window.zoom = function(src, caption){
+  const lb = document.getElementById("lb");
+  document.getElementById("lbimg").src = src;
+  document.getElementById("lbopen").href = src;
+  document.getElementById("lbcap").innerHTML = caption ? ("<b>" + caption + "</b>") : "";
+  lb.classList.remove("zoomed");
+  document.getElementById("lbzoom").textContent = "Zoom in";
+  lb.classList.add("on");
+};
 document.getElementById("lbx").onclick = ()=>document.getElementById("lb").classList.remove("on");
+document.getElementById("lbzoom").onclick = ()=>{
+  const lb = document.getElementById("lb");
+  lb.classList.toggle("zoomed");
+  document.getElementById("lbzoom").textContent = lb.classList.contains("zoomed") ? "Fit to screen" : "Zoom in";
+};
+document.getElementById("lbimg").onclick = ()=>document.getElementById("lbzoom").click();
+document.addEventListener("keydown", e=>{
+  if(e.key === "Escape") document.getElementById("lb").classList.remove("on");
+});
 document.getElementById("lb").onclick = e=>{ if(e.target.id==="lb") e.currentTarget.classList.remove("on"); };
 
-/* resolve one label — in production this POSTs to /api/read-label
-   which fetches the PNG and asks Claude which marker box it shows */
-window.readOne = i => {
-  const r = DATA[i];
-  const guess = ["FedEx Express","FedEx Ground","FedEx Home"][Math.floor(Math.random()*3)];
-  r.carrier = guess; r.read = "label";
+/* Resolve one label. Calls /api/read-label, which fetches the label image and
+   asks Claude which service marker it shows. Falls back to a local guess only
+   when the route isn't there (opening this file directly). */
+async function readOne(idx, btn){
+  const r = DATA[idx];
+  if(!r || r.read === "label") return;
+  if(btn){ btn.textContent = "Reading…"; btn.disabled = true; }
+
+  let service = null;
+  try{
+    const res = await fetch("/api/read-label", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ order: r.order, labelUrl: r.labelPdf || r.label })
+    });
+    const body = await res.json();
+    if(res.ok && body.service && body.service !== "UNREADABLE") service = body.service;
+    else if(btn){ btn.textContent = "Retry"; btn.disabled = false; btn.title = body.error || body.service || "unreadable"; }
+  }catch{
+    if(!LIVE){                       // offline prototype: simulate so the UI is demoable
+      service = ["FedEx Express","FedEx Ground","FedEx Home"][Math.floor(Math.random()*3)];
+    }else if(btn){ btn.textContent = "Retry"; btn.disabled = false; }
+  }
+
+  if(service){
+    r.carrier = service;
+    r.read = "label";
+    paintRow(idx);                   // touch one row, not the whole table
+    scheduleSummary();               // tiles + stats catch up on the next frame
+  }
+  return service;
+}
+window.readOne = readOne;
+
+/* Repaint a single row in place rather than rebuilding the table. */
+function paintRow(idx){
+  const r = DATA[idx];
+  const tr = document.querySelector('#rows tr[data-idx="'+idx+'"]');
+  if(!tr) return;
+  const tds = tr.children;
+  tds[5].innerHTML = chip(r.carrier);
+  tds[6].innerHTML = '<span class="src read">read from label</span>';
+}
+
+/* Batch read. Runs a few at a time so the browser stays responsive and we
+   don't hammer the API, with progress on the button and one summary repaint. */
+document.getElementById("readall").onclick = async ()=>{
+  const btn = document.getElementById("readall");
+  const todo = DATA.map((r,i)=>[r,i]).filter(([r])=>r.carrier==="FedEx — unverified" && (r.label||r.labelPdf));
+  if(!todo.length){ btn.textContent = "Nothing to read"; setTimeout(()=>btn.textContent="Read unverified labels",1800); return; }
+
+  btn.disabled = true;
+  let done = 0, ok = 0;
+  const CONCURRENCY = 4;
+  const queue = todo.slice();
+
+  async function worker(){
+    while(queue.length){
+      const [, i] = queue.shift();
+      const got = await readOne(i, null);
+      if(got) ok++;
+      done++;
+      btn.textContent = "Reading " + done + " / " + todo.length;
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(CONCURRENCY, todo.length)}, worker));
+
   render();
-};
-document.getElementById("readall").onclick = ()=>{
-  DATA.forEach((r,i)=>{ if(r.carrier==="FedEx — unverified") readOne(i); });
+  btn.disabled = false;
+  btn.textContent = ok === todo.length ? "Read unverified labels" : ("Read " + ok + " of " + todo.length);
+  setTimeout(()=>{ btn.textContent = "Read unverified labels"; }, 4000);
 };
 
 /* controls */
@@ -1144,7 +1294,13 @@ document.getElementById("clear").onclick = ()=>{
   document.getElementById("detail").hidden = true;
   if(LIVE) loadLive(); else render();
 };
-["f-order","f-trk","f-min","f-max"].forEach(id=>document.getElementById(id).oninput=render);
+let typeTimer;
+["f-order","f-trk","f-min","f-max"].forEach(id=>{
+  document.getElementById(id).oninput = ()=>{
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(render, 140);
+  };
+});
 document.getElementById("f-car").onchange = render;
 ["f-start","f-end"].forEach(id=>document.getElementById(id).onchange = ()=>{
   if(LIVE) loadLive(); else render();
