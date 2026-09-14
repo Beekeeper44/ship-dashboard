@@ -372,10 +372,6 @@
       <input type="checkbox" id="autoocr" checked>
       <span>Auto-OCR</span>
     </label>
-    <label class="toggle" title="Use the Claude API instead (needs ANTHROPIC_API_KEY)">
-      <input type="checkbox" id="autoread">
-      <span>Auto-read with AI</span>
-    </label>
   </div>
 
   <!-- ================= stats ================= -->
@@ -527,6 +523,13 @@ async function loadLive(force){
     }
     const body = await res.json().catch(()=>null);
     if(!res.ok){
+      // A forced refresh skips the cache, so it waits on the full Snowflake
+      // query and can time out. Fall back to the cached path rather than
+      // leaving the table empty.
+      if(force && (res.status === 504 || res.status === 502)){
+        setStatus("loading2", "Query took too long — loading the cached copy…");
+        return loadLive(false);
+      }
       setStatus("err", (body && (body.detail || body.error)) || ("HTTP " + res.status));
       return false;
     }
@@ -561,12 +564,8 @@ function maybeAutoOcr(){
 }
 
 function maybeAutoRead(){
-  const on = document.getElementById("autoread");
-  if(!on || !on.checked || aiDisabled) return;
-  if(ocrRunning) return;                 // let the free pass finish first
-  const auto = document.getElementById("autoocr");
-  if(auto && auto.checked) return;       // OCR is handling it
-  setTimeout(()=>readAllUnverified({ silent: true }), 250);
+  // The AI reader is no longer run automatically — OCR handles this for free.
+  // readOne() is still available if a single row needs it.
 }
 
 function setStatus(kind, detail){
@@ -584,7 +583,7 @@ function setStatus(kind, detail){
     setTimeout(()=>{ el.hidden = true; }, 4000);
   } else if(kind === "err"){
     el.className = "status err";
-    el.innerHTML = '<span class="d"></span><span><b>Metabase error.</b> ' + detail +
+    el.innerHTML = '<span class="d"></span><span><b>Load failed.</b> ' + detail +
       ' — check the variables in Vercel, then <b>redeploy</b> (env vars only apply at build time).</span>';
   } else {
     el.className = "status err";
@@ -1401,8 +1400,6 @@ async function readOne(idx, btn){
       service = body.service;
     }else if(body.error === "missing_env"){
       // No Anthropic key configured — stop trying and say so once, calmly.
-      const t = document.getElementById("autoread");
-      if(t) t.checked = false;
       aiDisabled = true;
       if(!aiWarned){
         aiWarned = true;
@@ -1501,7 +1498,6 @@ document.getElementById("classify").onclick = ()=>{
   lbIdx = -1;
   openNextUnverified();
 };
-document.getElementById("autoread").onchange = e=>{ if(e.target.checked) readAllUnverified({ silent:true }); };
 
 /* controls */
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
@@ -1517,7 +1513,7 @@ document.getElementById("apply").onclick = async ()=>{
   const b = document.getElementById("apply");
   const was = b.textContent;
   b.textContent = "Loading…"; b.disabled = true;
-  await loadLive(true);      // pulls the date range straight from Metabase
+  await loadLive();          // pulls the date range straight from Metabase
   render();                  // then applies the client-side filters
   b.textContent = was; b.disabled = false;
 };
@@ -1597,7 +1593,7 @@ document.getElementById("home").onclick = ()=>{
   document.getElementById("detail").hidden = true;
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view==="today"));
   view = "today"; sortKey = "ts"; sortDir = -1;
-  loadLive(true);
+  loadLive();
   window.scrollTo({top:0,behavior:"smooth"});
 };
 
