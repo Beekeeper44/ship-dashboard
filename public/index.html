@@ -96,6 +96,33 @@
   .btn.go{background:var(--green);border-color:var(--green);color:#04210a;font-weight:700}
   .btn.go:hover{background:#5cff3f}
 
+  /* ---------- date range header ---------- */
+  .range{
+    border:1px solid var(--line);border-radius:7px;padding:16px 18px;margin-bottom:16px;
+    display:flex;flex-direction:column;gap:14px;
+  }
+  .range .rtop{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .range .lbl{color:#ffffff;font-size:13px;letter-spacing:.8px;text-transform:uppercase}
+  .range .val{color:var(--green);font-size:19px;font-weight:700;letter-spacing:.4px}
+  .range .cnt{color:#ffffff;font-size:14px}
+  .range .rrow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+  .range .rsep{width:1px;align-self:stretch;background:var(--line);margin:0 6px}
+  .pick{
+    background:#0d0d0d;border:1px solid var(--line);border-radius:5px;color:#ffffff;
+    font:inherit;font-size:13px;letter-spacing:.6px;text-transform:uppercase;
+    padding:9px 14px;cursor:pointer;white-space:nowrap;
+  }
+  .pick:hover{border-color:#333;background:#131313}
+  .pick.on{border-color:var(--green);color:var(--green);background:rgba(66,255,66,.07)}
+  .range .fld{display:flex;flex-direction:column;gap:5px}
+  .range .fld label{color:#ffffff;font-size:12px;letter-spacing:.4px}
+  .range input[type=date]{
+    background:#0d0d0d;border:1px solid var(--line);border-radius:4px;color:var(--ink);
+    font:inherit;font-size:14px;padding:9px 11px;min-width:150px;
+  }
+  .range input[type=date]:focus{outline:none;border-color:var(--green)}
+  .range .arrow{align-self:center;color:#ffffff;padding:0 2px}
+
   /* ---------- filters ---------- */
   .filters{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
   .f{display:flex;flex-direction:column;gap:5px}
@@ -327,6 +354,7 @@
   <div class="tabs">
     <button class="tab on" data-view="today">Today <span class="n" id="t-today">0</span></button>
     <button class="tab" data-view="week">This week <span class="n" id="t-week">0</span></button>
+    <button class="tab" data-view="range">Date range <span class="n" id="t-range">0</span></button>
     <button class="tab" data-view="unverified">Unverified service <span class="n" id="t-unver">0</span></button>
     <button class="tab" data-view="notrack">No tracking <span class="n" id="t-notrk">0</span></button>
     <button class="tab" data-view="team">Team history <span class="n" id="t-team">0</span></button>
@@ -340,6 +368,33 @@
     </select>
     <span class="nextin" id="nextin"></span>
     <button class="btn" id="metabase">Open in Metabase ↗</button>
+  </div>
+
+  <!-- ================= date range ================= -->
+  <div class="range">
+    <div class="rtop">
+      <span class="lbl">Showing</span>
+      <span class="val" id="r-label">—</span>
+      <span class="cnt" id="r-count"></span>
+    </div>
+    <div class="rrow">
+      <button class="pick" data-pick="today">Today</button>
+      <button class="pick" data-pick="yesterday">Yesterday</button>
+      <button class="pick" data-pick="7">Last 7 days</button>
+      <button class="pick" data-pick="14">Last 14 days</button>
+      <button class="pick" data-pick="30">Last 30 days</button>
+      <button class="pick" data-pick="month">This month</button>
+      <button class="pick" data-pick="loaded">All loaded</button>
+    </div>
+    <div class="rrow">
+      <div class="fld"><label>Specific day</label><input type="date" id="r-day"></div>
+      <span class="rsep"></span>
+      <div class="fld"><label>From</label><input type="date" id="r-from"></div>
+      <span class="arrow">&rarr;</span>
+      <div class="fld"><label>To</label><input type="date" id="r-to"></div>
+      <button class="btn go" id="r-go">Load range</button>
+      <button class="btn" id="r-reset">Back to today</button>
+    </div>
   </div>
 
   <!-- ================= filters ================= -->
@@ -536,10 +591,12 @@ async function loadLive(force){
     if(!Array.isArray(body)){ setStatus("err", "Unexpected response shape"); return false; }
     DATA = body;
     LIVE = true;
+    const snapped = snapRangeToData();
     applyResolved();        // keep carriers we already resolved
     rebuildEmployees();
     render();
-    setStatus("live", body.length + " shipments");
+    if(snapped) setStatus("range", snapped.lo === snapped.hi ? snapped.lo : (snapped.lo + " to " + snapped.hi));
+    else setStatus("live", body.length + " shipments");
     maybeAutoOcr();
     maybeAutoRead();
     return true;
@@ -568,6 +625,123 @@ function maybeAutoRead(){
   // readOne() is still available if a single row needs it.
 }
 
+/* The API filters by date and the table filters again by the same inputs. When
+   the card ignores the range it was sent, the two disagree and every row is
+   filtered out — a full set of rows loaded, nothing on screen. Rather than show
+   an empty table, move the inputs to the range that actually came back and say
+   so. */
+function snapRangeToData(){
+  if(!DATA.length) return null;
+  const days = DATA.map(day).sort();
+  const lo = days[0], hi = days[days.length-1];
+  const s = v("f-start"), e = v("f-end");
+  const noOverlap = (s && hi < s) || (e && lo > e);
+  if(!noOverlap) return null;
+  document.getElementById("f-start").value = lo;
+  document.getElementById("f-end").value   = hi;
+  if(view === "today" && lo !== TODAY){          // today's tab would also be empty
+    selectView("range");
+  }
+  return {lo, hi};
+}
+
+/* ============================================================
+   DATE RANGE HEADER
+   One window, expressed two ways — a single day or a from/to pair.
+   The f-start / f-end inputs stay the source of truth so the rest of
+   the filtering code is untouched; this section writes to them, sends
+   them to Metabase, and reflects whatever comes back.
+   ============================================================ */
+const shiftDay = (iso, n) => {
+  const d = new Date(iso + "T12:00:00");
+  d.setDate(d.getDate() + n);
+  return d.toLocaleDateString("en-CA");
+};
+const prettyDay = iso => new Date(iso + "T12:00:00")
+  .toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric", year:"numeric"});
+const spanDays = (a, b) =>
+  Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000) + 1;
+
+function currentRange(){
+  return { from: v("f-start") || TODAY, to: v("f-end") || TODAY };
+}
+
+/* Which preset, if any, the current window matches. */
+function matchPick(from, to){
+  if(from === TODAY && to === TODAY) return "today";
+  const y = shiftDay(TODAY, -1);
+  if(from === y && to === y) return "yesterday";
+  if(to === TODAY){
+    for(const n of [7, 14, 30]) if(from === shiftDay(TODAY, -(n - 1))) return String(n);
+  }
+  if(to === TODAY && from === TODAY.slice(0, 8) + "01") return "month";
+  return null;
+}
+
+function updateRangeUI(){
+  const {from, to} = currentRange();
+  document.getElementById("r-day").value  = (from === to) ? from : "";
+  document.getElementById("r-from").value = from;
+  document.getElementById("r-to").value   = to;
+
+  document.getElementById("r-label").textContent = (from === to)
+    ? prettyDay(from)
+    : prettyDay(from).replace(/^\w+, /, "") + " \u2013 " + prettyDay(to).replace(/^\w+, /, "");
+
+  const n = spanDays(from, to);
+  const shown = dateScoped(DATA).length;
+  document.getElementById("r-count").textContent =
+    "\u00b7 " + (n === 1 ? "1 day" : n + " days") + " \u00b7 " + shown.toLocaleString() + " shipments loaded";
+
+  const hit = matchPick(from, to);
+  document.querySelectorAll(".pick").forEach(b => b.classList.toggle("on", b.dataset.pick === hit));
+}
+
+function selectView(name){
+  view = name;
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.dataset.view === name));
+}
+
+/* Set the window and pull it from Metabase. Switches to the Date range tab so
+   a historical window isn't hidden behind the Today filter. */
+async function applyRange(from, to){
+  if(!from || !to) return;
+  if(from > to) [from, to] = [to, from];
+  document.getElementById("f-start").value = from;
+  document.getElementById("f-end").value   = to;
+  selectView((from === to && from === TODAY) ? "today" : "range");
+  updateRangeUI();
+  await loadLive();
+  render();
+  updateRangeUI();
+}
+
+function pickToRange(pick){
+  if(pick === "today")     return [TODAY, TODAY];
+  if(pick === "yesterday") return [shiftDay(TODAY,-1), shiftDay(TODAY,-1)];
+  if(pick === "month")     return [TODAY.slice(0,8) + "01", TODAY];
+  if(pick === "loaded"){
+    if(!DATA.length) return [TODAY, TODAY];
+    const days = DATA.map(day).sort();
+    return [days[0], days[days.length-1]];
+  }
+  const n = +pick;
+  return [shiftDay(TODAY, -(n - 1)), TODAY];
+}
+
+document.querySelectorAll(".pick").forEach(b => b.onclick = () => {
+  const [from, to] = pickToRange(b.dataset.pick);
+  applyRange(from, to);
+});
+document.getElementById("r-day").onchange = e => {
+  if(e.target.value) applyRange(e.target.value, e.target.value);
+};
+document.getElementById("r-go").onclick = () =>
+  applyRange(v("r-from"), v("r-to"));
+document.getElementById("r-reset").onclick = () => applyRange(TODAY, TODAY);
+document.getElementById("f-start").onchange = updateRangeUI;
+document.getElementById("f-end").onchange   = updateRangeUI;
+
 function setStatus(kind, detail){
   const el = document.getElementById("status");
   el.hidden = false;
@@ -581,6 +755,11 @@ function setStatus(kind, detail){
     el.className = "status live";
     el.innerHTML = '<span class="d"></span><span><b>Live</b> — Metabase question ' + METABASE_CARD + ' · ' + detail + '</span>';
     setTimeout(()=>{ el.hidden = true; }, 4000);
+  } else if(kind === "range"){
+    el.className = "status sample";
+    el.innerHTML = '<span class="d"></span><span><b>Showing ' + detail + '.</b> ' +
+      'The card returned a different range than the one requested, so the date filters were moved to match it — ' +
+      'check <code>/api/shipments?debug=1</code> to see which variables it actually received.</span>';
   } else if(kind === "err"){
     el.className = "status err";
     el.innerHTML = '<span class="d"></span><span><b>Load failed.</b> ' + detail +
@@ -760,6 +939,9 @@ function showEmployee(name){
 }
 
 function viewRows(){
+  // "range" leans entirely on the date inputs — filtered() applies them, so the
+  // tab shows exactly the window that was loaded, whatever it is.
+  if(view==="range")      return DATA;
   if(view==="today")      return DATA.filter(r=>day(r)===TODAY);
   if(view==="week")       return DATA.filter(r=>day(r)>=weekAgo());
   if(view==="unverified") return DATA.filter(r=>r.carrier==="FedEx — unverified");
@@ -767,9 +949,23 @@ function viewRows(){
   return DATA;
 }
 
-function filtered(){
+/* Rows inside the date range only — what the tab counters should count.
+   Tabs counting all of DATA while the table counts the filtered set is how
+   you end up with "Today 1189" sitting above an empty table. */
+function dateScoped(list){
+  const s=v("f-start"), e=v("f-end");
+  return list.filter(r=>{
+    if(s && day(r)<s) return false;
+    if(e && day(r)>e) return false;
+    return true;
+  });
+}
+
+/* opts.ignoreCarrier lets the carrier tiles show the whole breakdown even when
+   one tile is selected — otherwise picking FedEx zeroes out every other tile. */
+function filtered(opts){
   const s=v("f-start"), e=v("f-end"), emp=v("f-emp"), ord=v("f-order").trim(),
-        trk=v("f-trk").replace(/\D/g,""), car=v("f-car"),
+        trk=v("f-trk").replace(/\D/g,""), car=(opts && opts.ignoreCarrier) ? "" : v("f-car"),
         mn=v("f-min"), mx=v("f-max");
   return viewRows().filter(r=>{
     if(s && day(r)<s) return false;
@@ -828,26 +1024,31 @@ function scheduleSummary(){
 
 function render(){
   const rows = filtered();
+  // Same filters as the table, minus the carrier chip, so the breakdown above
+  // always adds up to what is listed below it.
+  const scope = filtered({ignoreCarrier:true});
+  const inRange = dateScoped(DATA);
 
   // tabs
-  document.getElementById("t-today").textContent = DATA.filter(r=>day(r)===TODAY).length;
-  document.getElementById("t-week").textContent  = DATA.filter(r=>day(r)>=weekAgo()).length;
-  document.getElementById("t-unver").textContent = DATA.filter(r=>r.carrier==="FedEx — unverified").length;
-  document.getElementById("t-notrk").textContent = DATA.filter(r=>!r.trk).length;
+  document.getElementById("t-today").textContent = inRange.filter(r=>day(r)===TODAY).length;
+  document.getElementById("t-week").textContent  = inRange.filter(r=>day(r)>=weekAgo()).length;
+  document.getElementById("t-range").textContent = inRange.length;
+  document.getElementById("t-unver").textContent = inRange.filter(r=>r.carrier==="FedEx — unverified").length;
+  document.getElementById("t-notrk").textContent = inRange.filter(r=>!r.trk).length;
 
   // stats
   const cards = rows.reduce((n,r)=>n+r.cards,0);
   const by = {};
-  viewRows().forEach(r=>by[r.carrier]=(by[r.carrier]||0)+1);
+  scope.forEach(r=>by[r.carrier]=(by[r.carrier]||0)+1);
   const byCards = {};
-  viewRows().forEach(r=>byCards[r.carrier]=(byCards[r.carrier]||0)+r.cards);
+  scope.forEach(r=>byCards[r.carrier]=(byCards[r.carrier]||0)+r.cards);
 
   document.getElementById("stats").innerHTML = [
     {k:"Orders shipped", v:rows.length, s:"in this view", c:"var(--green)"},
     {k:"Cards shipped",  v:cards,       s:"distinct cards scanned", c:"var(--green)"},
-    {k:"Unverified service", v:viewRows().filter(r=>r.carrier==="FedEx — unverified").length,
+    {k:"Unverified service", v:scope.filter(r=>r.carrier==="FedEx — unverified").length,
        s:"read the label to resolve", c:"var(--gold)", warn:"var(--gold)"},
-    {k:"No tracking",    v:viewRows().filter(r=>!r.trk).length,
+    {k:"No tracking",    v:scope.filter(r=>!r.trk).length,
        s:"shipped with no number", c:"var(--red)", warn:"var(--red)"},
     {k:"Employees",      v:new Set(rows.map(r=>r.who)).size, s:"shipping today", c:"var(--green)"}
   ].map(x=>`
@@ -875,7 +1076,7 @@ function render(){
       </div>
       <div class="row">
         <span class="v">${n}</span>
-        <span class="c">${k.toLocaleString()} cards<br>${n?Math.round(n/Math.max(viewRows().length,1)*100):0}% of orders</span>
+        <span class="c">${k.toLocaleString()} cards<br>${n?Math.round(n/Math.max(scope.length,1)*100):0}% of orders</span>
       </div>
       <div class="bar"></div>
     </button>`;
@@ -915,7 +1116,7 @@ function render(){
   document.querySelectorAll("#rows .namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
   document.getElementById("empty").hidden = rows.length>0;
   document.getElementById("p-count").textContent = rows.length;
-  document.getElementById("t-team").textContent = new Set(DATA.map(r=>r.who)).size;
+  document.getElementById("t-team").textContent = new Set(inRange.map(r=>r.who)).size;
 
   const team = view==="team";
   document.getElementById("teampanel").hidden = !team;
@@ -927,6 +1128,8 @@ function render(){
   document.getElementById("m-cards").textContent  = DATA.reduce((n,r)=>n+r.cards,0).toLocaleString();
   document.getElementById("m-asof").textContent   = new Date(TODAY+"T12:00:00")
     .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+
+  updateRangeUI();
 
   document.querySelectorAll("th[data-k]").forEach(th=>{
     th.classList.toggle("on", th.dataset.k===sortKey);
