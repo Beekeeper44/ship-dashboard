@@ -46,6 +46,19 @@
   .meta{margin-left:auto;text-align:right;color:#ffffff;font-size:14px;line-height:1.8;white-space:nowrap}
   .meta .live{color:var(--green)}
 
+  /* ---------- data status ---------- */
+  .status{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:6px;
+    margin-bottom:16px;font-size:14px;border:1px solid}
+  .status.live{border-color:rgba(57,255,20,.35);background:rgba(57,255,20,.06);color:#fff}
+  .status.sample{border-color:rgba(232,176,75,.45);background:rgba(232,176,75,.08);color:#fff}
+  .status.err{border-color:rgba(239,68,68,.45);background:rgba(239,68,68,.08);color:#fff}
+  .status b{font-weight:700}
+  .status .d{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .status.live .d{background:var(--green)}
+  .status.sample .d{background:var(--gold)}
+  .status.err .d{background:var(--red)}
+  .status code{background:rgba(255,255,255,.1);padding:2px 6px;border-radius:3px;font-size:13px}
+
   /* ---------- tabs ---------- */
   .tabs{display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap}
   .tab{
@@ -259,6 +272,8 @@
       as of <span id="m-asof">—</span>
     </div>
   </div>
+
+  <div class="status sample" id="status" hidden></div>
 
   <!-- ================= tabs ================= -->
   <div class="tabs">
@@ -652,30 +667,64 @@ const SAMPLE = [
   {who:"Arman Abonitalla",order:"19405872",cards:5,trk:"877372903727",carrier:"FedEx Express",read:"label",ts:"2026-09-14T15:09:00",label:1},
 ];
 
+SAMPLE.forEach(r=>{
+  if(!r.orderUrl) r.orderUrl = "https://admin.arenaclub.com/orders/" + r.order;
+  if(!r.trackUrl) r.trackUrl = "";   // resolved by trackFallback()
+});
+
 let DATA = SAMPLE.map(r=>({...r}));
 
 /* Live data. In the Vercel app /api/shipments proxies Metabase card 38974
    (https://arena-club.metabaseapp.com/question/38974). Falls back to the
    sample rows when the route isn't there — e.g. opening this file directly. */
 const METABASE_CARD = 38974;
+let LIVE = false;
 
 async function loadLive(){
   const s = v("f-start"), e = v("f-end");
   const qs = new URLSearchParams();
   if(s) qs.set("start", s);
   if(e) qs.set("end", e);
+  setStatus("loading");
   try{
     const res = await fetch("/api/shipments?" + qs.toString());
-    if(!res.ok) throw new Error(res.status);
-    const rows = await res.json();
-    if(!Array.isArray(rows) || !rows.length) throw new Error("empty");
-    DATA = rows;
+    const body = await res.json().catch(()=>null);
+    if(!res.ok){
+      setStatus("err", (body && (body.detail || body.error)) || ("HTTP " + res.status));
+      return false;
+    }
+    if(!Array.isArray(body)){ setStatus("err", "Unexpected response shape"); return false; }
+    DATA = body;
+    LIVE = true;
     rebuildEmployees();
     render();
+    setStatus("live", body.length + " shipments");
     return true;
   }catch(err){
-    console.info("Using sample data —", err.message);
+    setStatus("offline", err.message);
     return false;
+  }
+}
+
+function setStatus(kind, detail){
+  const el = document.getElementById("status");
+  el.hidden = false;
+  if(kind === "loading"){
+    el.className = "status sample";
+    el.innerHTML = '<span class="d"></span><span>Loading from Metabase question ' + METABASE_CARD + '…</span>';
+  } else if(kind === "live"){
+    el.className = "status live";
+    el.innerHTML = '<span class="d"></span><span><b>Live</b> — Metabase question ' + METABASE_CARD + ' · ' + detail + '</span>';
+    setTimeout(()=>{ el.hidden = true; }, 4000);
+  } else if(kind === "err"){
+    el.className = "status err";
+    el.innerHTML = '<span class="d"></span><span><b>Metabase returned an error.</b> ' + detail +
+      ' — check <code>METABASE_API_KEY</code> and <code>METABASE_CARD_ID</code> in Vercel.</span>';
+  } else {
+    el.className = "status sample";
+    el.innerHTML = '<span class="d"></span><span><b>Not connected to Metabase.</b> ' +
+      'This page is showing sample rows because <code>/api/shipments</code> isn\'t reachable — ' +
+      'deploy to Vercel with <code>METABASE_API_KEY</code> set to see real data.</span>';
   }
 }
 
@@ -689,7 +738,12 @@ function rebuildEmployees(){
   sel.value = cur;
 }
 let view = "today", sortKey="ts", sortDir=-1;
-const TODAY = "2026-09-14";
+/* Sample rows are dated 2026-09-14. Once live data is loaded, "today" is the
+   real current date so the Today tab and date filters follow the calendar. */
+let TODAY = "2026-09-14";
+if (location.hostname !== "" && location.protocol !== "file:") {
+  TODAY = new Date().toLocaleDateString("en-CA");   // YYYY-MM-DD, local time
+}
 
 const fmtTrk = s => !s ? "" : /^\d{12}$/.test(s) ? s.replace(/(\d{4})(\d{4})(\d{4})/,"$1 $2 $3")
                    : s.replace(/(.{4})/g,"$1 ").trim();
@@ -874,6 +928,30 @@ function filtered(){
 }
 const v = id => document.getElementById(id).value;
 
+/* Links column. Uses the urls the query returns; if TRACKING_URL is empty
+   we fall back to the carrier's public tracking page so the link still works. */
+function trackFallback(r){
+  const t = (r.trk||"").replace(/[^A-Za-z0-9]/g,"");
+  if(!t) return "";
+  if(/^1Z/i.test(t))   return "https://www.ups.com/track?tracknum=" + t;
+  if(/^JJD/i.test(t))  return "https://www.dhl.com/us-en/home/tracking.html?tracking-id=" + t;
+  if(/^9[2-5]/.test(t))return "https://tools.usps.com/go/TrackConfirmAction?tLabels=" + t;
+  if(/^\d{12}$/.test(t) || /^96\d+/.test(t))
+                       return "https://www.fedex.com/fedextrack/?trknbr=" + t;
+  return "";
+}
+
+function linkCell(r){
+  const track = r.trackUrl || trackFallback(r);
+  const order = r.orderUrl || "";
+  const a = [];
+  if(track) a.push(`<a class="lnk" href="${track}" target="_blank" rel="noopener">track</a>`);
+  else if(r.trk) a.push('<span class="dim">track</span>');
+  if(order) a.push(`<a class="lnk" href="${order}" target="_blank" rel="noopener">order</a>`);
+  else a.push('<span class="dim">order</span>');
+  return a.join(" ");
+}
+
 function chip(c){
   const logo = CARRIER_LOGOS[c];
   const mk = logo ? `<img src="${logo}" alt="">`
@@ -949,15 +1027,21 @@ function render(){
         ? `<img class="thumb" src="${labelSrc(r)}" alt="Label ${r.order}" onclick="zoom('${labelSrc(r)}')" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb miss',textContent:'—'}))">`
         : `<div class="thumb miss">—</div>`}</td>
       <td><button class="namebtn${r.gap?" gap":""}" data-emp="${r.who}">${r.who}</button></td>
-      <td><a class="lnk mono" href="#" onclick="return false">#${r.order}</a></td>
+      <td>${r.orderUrl
+            ? `<a class="lnk mono" href="${r.orderUrl}" target="_blank" rel="noopener">#${r.order}</a>`
+            : `<span class="mono">#${r.order}</span>`}</td>
       <td class="num">${r.cards}</td>
-      <td class="mono">${r.trk ? fmtTrk(r.trk) : '<span class="dim">—</span>'}</td>
+      <td class="mono">${r.trk
+            ? (r.trackUrl
+                ? `<a class="lnk" href="${r.trackUrl}" target="_blank" rel="noopener">${fmtTrk(r.trk)}</a>`
+                : fmtTrk(r.trk))
+            : '<span class="dim">—</span>'}</td>
       <td>${chip(r.carrier)}</td>
       <td>${r.read==="label" ? '<span class="src read">read from label</span>'
             : r.read==="pending" ? `<button class="readbtn" onclick="readOne(${DATA.indexOf(r)})">Read label</button>`
             : '<span class="src">—</span>'}</td>
       <td class="dim mono">${fmtTs(r.ts)}</td>
-      <td>${r.trk?'<a class="lnk" href="#" onclick="return false">track</a> ':''}<a class="lnk" href="#" onclick="return false">order</a></td>
+      <td>${linkCell(r)}</td>
     </tr>`).join("");
 
   document.querySelectorAll("#rows .namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
@@ -1044,33 +1128,52 @@ document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
   if(k===sortKey) sortDir*=-1; else { sortKey=k; sortDir=(k==="cards"||k==="ts")?-1:1; }
   render();
 });
-document.getElementById("apply").onclick = render;
+document.getElementById("apply").onclick = async ()=>{
+  const b = document.getElementById("apply");
+  const was = b.textContent;
+  b.textContent = "Loading…"; b.disabled = true;
+  await loadLive();          // pulls the date range straight from Metabase
+  render();                  // then applies the client-side filters
+  b.textContent = was; b.disabled = false;
+};
 document.getElementById("clear").onclick = ()=>{
-  ["f-start","f-end","f-emp","f-order","f-trk","f-car","f-min","f-max"].forEach(id=>document.getElementById(id).value="");
+  ["f-emp","f-order","f-trk","f-car","f-min","f-max"].forEach(id=>document.getElementById(id).value="");
+  const today = (typeof TODAY !== "undefined") ? TODAY : new Date().toISOString().slice(0,10);
+  document.getElementById("f-start").value = today;
+  document.getElementById("f-end").value = today;
   document.getElementById("detail").hidden = true;
-  render();
+  if(LIVE) loadLive(); else render();
 };
 ["f-order","f-trk","f-min","f-max"].forEach(id=>document.getElementById(id).oninput=render);
-["f-start","f-end","f-car"].forEach(id=>document.getElementById(id).onchange=render);
+document.getElementById("f-car").onchange = render;
+["f-start","f-end"].forEach(id=>document.getElementById(id).onchange = ()=>{
+  if(LIVE) loadLive(); else render();
+});
 document.getElementById("f-emp").onchange = e => {
   if(e.target.value) showEmployee(e.target.value);
   else { document.getElementById("detail").hidden = true; render(); }
 };
 document.getElementById("refresh").onclick = async ()=>{
   const b = document.getElementById("refresh");
-  b.textContent = "Loading…";
+  b.textContent = "Loading…"; b.disabled = true;
   const ok = await loadLive();
-  if(!ok){ DATA = SAMPLE.map(r=>({...r})); rebuildEmployees(); render(); }
-  b.textContent = "Refresh ↻";
+  if(!ok && !LIVE){          // never connected — fall back to samples, banner says so
+    DATA = SAMPLE.map(r=>({...r}));
+    rebuildEmployees();
+    render();
+  }
+  b.textContent = "Refresh \u21bb"; b.disabled = false;
 };
 document.getElementById("home").onclick = ()=>{
-  ["f-start","f-end","f-emp","f-order","f-trk","f-car","f-min","f-max"]
+  ["f-emp","f-order","f-trk","f-car","f-min","f-max"]
     .forEach(id=>document.getElementById(id).value="");
+  const today0 = (typeof TODAY !== "undefined") ? TODAY : new Date().toISOString().slice(0,10);
+  document.getElementById("f-start").value = today0;
+  document.getElementById("f-end").value = today0;
   document.getElementById("detail").hidden = true;
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view==="today"));
   view = "today"; sortKey = "ts"; sortDir = -1;
-  DATA = SAMPLE.map(r=>({...r}));
-  render();
+  if(LIVE) loadLive(); else { DATA = SAMPLE.map(r=>({...r})); render(); }
   window.scrollTo({top:0,behavior:"smooth"});
 };
 
@@ -1089,6 +1192,14 @@ document.getElementById("csv").onclick = ()=>{
 [...new Set(SAMPLE.map(r=>r.who))].sort().forEach(n=>{
   const o=document.createElement("option"); o.textContent=n; document.getElementById("f-emp").appendChild(o);
 });
+
+/* default the date range to today so the filters show what's on screen */
+(function initDates(){
+  const today = (typeof TODAY !== "undefined") ? TODAY : new Date().toISOString().slice(0,10);
+  const s = document.getElementById("f-start"), e = document.getElementById("f-end");
+  if(!s.value) s.value = today;
+  if(!e.value) e.value = today;
+})();
 
 render();
 loadLive();
