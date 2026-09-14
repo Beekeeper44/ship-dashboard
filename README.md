@@ -119,6 +119,23 @@ VALUES ('<uuid from the dashboard>', 'Their Name');
 
 Takes effect on the next refresh. No redeploy, no SQL question edit.
 
+## Troubleshooting
+
+`/api/shipments?debug=1` returns the variables the card declares, with their
+Metabase ids, types and whether they're required. If a run fails, a failed
+response also includes `sentParameters` so you can see exactly what was sent.
+
+Common causes:
+
+| Symptom | Cause |
+|---|---|
+| `missing required key, received: nil` | the parameter was sent without the tag's `id` — fixed, but redeploy to pick it up |
+| `Schema for a string that cannot be blank` | a required variable got an empty value; give it a default in Metabase or make it optional |
+| 401 / 403 | the API key's group can't see the collection holding the question |
+| rows come back but columns are empty | the question aliases columns differently — see Column mapping below |
+
+Remember to **redeploy** after changing environment variables.
+
 ## Column mapping
 
 `api/shipments.js` expects these from card 38974 (case-insensitive):

@@ -15,6 +15,36 @@ function metabaseBase() {
   return base;
 }
 
+function headers() {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': process.env.METABASE_API_KEY,
+  };
+}
+
+// name -> { id, type, required } for the card's native template tags.
+// Metabase requires each parameter to carry the tag's UUID `id`, not just its
+// name, so read the card definition first. Cached for the life of the lambda.
+let TAG_CACHE = null;
+
+async function getTemplateTags(base) {
+  if (TAG_CACHE) return TAG_CACHE;
+  const r = await fetch(`${base}/api/card/${CARD_ID}`, { headers: headers() });
+  if (!r.ok) throw new Error(`card_fetch ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const card = await r.json();
+  const tags = card?.dataset_query?.native?.['template-tags'] || {};
+  TAG_CACHE = Object.fromEntries(
+    Object.entries(tags).map(([name, t]) => [name, { id: t.id, type: t.type, required: !!t.required }])
+  );
+  return TAG_CACHE;
+}
+
+function paramType(tagType) {
+  if (tagType === 'date') return 'date/single';
+  if (tagType === 'number') return 'number/=';
+  return 'category';
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'method_not_allowed' });
@@ -27,25 +57,38 @@ export default async function handler(req, res) {
     });
   }
 
-  const { start, end } = req.query;
+  const { start, end, debug } = req.query;
 
-  // Template-tag parameters. Names must match the {{variables}} in the SQL.
-  // Omit one entirely and its [[ ]] block drops out, which is how the query
-  // falls back to CURRENT_DATE().
-  const parameters = [];
-  if (start) {
-    parameters.push({
-      type: 'date/single',
-      target: ['variable', ['template-tag', 'start_date']],
-      value: start,
-    });
+  let tags;
+  try {
+    tags = await getTemplateTags(BASE);
+  } catch (err) {
+    return res.status(502).json({ error: 'card_definition_failed', detail: String(err) });
   }
-  if (end) {
-    parameters.push({
-      type: 'date/single',
-      target: ['variable', ['template-tag', 'end_date']],
-      value: end,
-    });
+
+  // /api/shipments?debug=1 shows exactly which variables the card declares
+  if (debug) return res.status(200).json({ card: CARD_ID, tags });
+
+  // Only send values for tags the card actually declares. Anything marked
+  // required gets a value even if the caller didn't supply one, otherwise
+  // Metabase refuses to run.
+  const today = new Date().toLocaleDateString('en-CA');
+  const parameters = [];
+
+  for (const [name, tag] of Object.entries(tags)) {
+    let value;
+    if (name === 'start_date') value = start || (tag.required ? today : undefined);
+    else if (name === 'end_date') value = end || (tag.required ? today : undefined);
+    else if (tag.required) value = tag.type === 'number' ? 0 : '';
+
+    if (value !== undefined && value !== null && value !== '') {
+      parameters.push({
+        id: tag.id,
+        type: paramType(tag.type),
+        target: ['variable', ['template-tag', name]],
+        value,
+      });
+    }
   }
 
   let raw;
@@ -54,16 +97,18 @@ export default async function handler(req, res) {
       `${BASE}/api/card/${CARD_ID}/query/json`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.METABASE_API_KEY,
-        },
+        headers: headers(),
         body: JSON.stringify({ parameters }),
       }
     );
     if (!r.ok) {
       const detail = await r.text();
-      return res.status(502).json({ error: 'metabase_failed', status: r.status, detail: detail.slice(0, 500) });
+      return res.status(502).json({
+        error: 'metabase_failed',
+        status: r.status,
+        sentParameters: parameters,
+        detail: detail.slice(0, 600),
+      });
     }
     raw = await r.json();
   } catch (err) {
