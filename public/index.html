@@ -413,7 +413,7 @@
   <div class="panel">
     <div class="phead">
       <span class="t">Shipments · <span id="p-count">0</span></span>
-      <span class="r">source: ship_card operation logs · one row per order</span>
+      <span class="r" id="p-range">source: ship_card operation logs · one row per order</span>
     </div>
     <div class="scroll">
       <table>
@@ -768,15 +768,16 @@ function viewRows(){
 }
 
 function filtered(){
-  const s=v("f-start"), e=v("f-end"), emp=v("f-emp"), ord=v("f-order").trim(),
+  // Dates are applied by Metabase when the data is fetched, so they are NOT
+  // re-applied here. Filtering twice meant any difference in timestamp format
+  // between Snowflake and the browser silently emptied the table.
+  const emp=v("f-emp"), ord=v("f-order").trim(),
         trk=v("f-trk").replace(/\D/g,""), car=v("f-car"),
         mn=v("f-min"), mx=v("f-max");
   return viewRows().filter(r=>{
-    if(s && day(r)<s) return false;
-    if(e && day(r)>e) return false;
     if(emp && r.who!==emp) return false;
-    if(ord && !r.order.includes(ord)) return false;
-    if(trk && !r.trk.replace(/\D/g,"").includes(trk)) return false;
+    if(ord && !String(r.order).includes(ord)) return false;
+    if(trk && !String(r.trk).replace(/\D/g,"").includes(trk)) return false;
     if(car && r.carrier!==car) return false;
     if(mn!=="" && r.cards < +mn) return false;
     if(mx!=="" && r.cards > +mx) return false;
@@ -915,6 +916,10 @@ function render(){
   document.querySelectorAll("#rows .namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
   document.getElementById("empty").hidden = rows.length>0;
   document.getElementById("p-count").textContent = rows.length;
+  const ps = v("f-start"), pe = v("f-end");
+  document.getElementById("p-range").textContent =
+    (ps && pe ? (ps === pe ? ps : ps + " to " + pe) + " · " : "") +
+    "ship_card operation logs · one row per order";
   document.getElementById("t-team").textContent = new Set(DATA.map(r=>r.who)).size;
 
   const team = view==="team";
@@ -1551,7 +1556,8 @@ let typeTimer;
 });
 document.getElementById("f-car").onchange = render;
 ["f-start","f-end"].forEach(id=>document.getElementById(id).onchange = ()=>{
-  if(LIVE) loadLive(); else render();
+  // dates only take effect via the query, so always refetch
+  loadLive();
 });
 document.getElementById("f-emp").onchange = e => {
   if(e.target.value) showEmployee(e.target.value);

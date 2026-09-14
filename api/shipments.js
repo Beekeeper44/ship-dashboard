@@ -131,7 +131,7 @@ export default async function handler(req, res) {
     return undefined;
   };
 
-  const rows = raw.map((r) => {
+  let rows = raw.map((r) => {
     const who = pick(r, 'SHIPPED_BY') ?? '';
     const label = pick(r, 'LABEL_IMAGE', 'LABEL_URL') || '';
     return {
@@ -146,6 +146,26 @@ export default async function handler(req, res) {
       gap: typeof who === 'string' && who.startsWith('Unmapped user'),
     };
   });
+
+  // Clamp to the requested range.
+  //
+  // Metabase should already have applied start_date / end_date, but a template
+  // tag that isn't wired the way we expect would silently return everything —
+  // including today when the user asked for last week. Parsing the timestamps
+  // here makes the range exact regardless of how they come back.
+  let dropped = 0;
+  if (start || end) {
+    const lo = start ? Date.parse(start + 'T00:00:00') : -Infinity;
+    const hi = end ? Date.parse(end + 'T23:59:59.999') : Infinity;
+    const before = rows.length;
+    rows = rows.filter((r) => {
+      if (!r.ts) return false;
+      const t = Date.parse(r.ts);
+      if (Number.isNaN(t)) return true;      // unparseable — keep rather than drop
+      return t >= lo && t <= hi;
+    });
+    dropped = before - rows.length;
+  }
 
   // Merge in service levels already read off labels, and any employee names
   // that don't resolve in public.users
@@ -183,6 +203,9 @@ export default async function handler(req, res) {
     ? 'no-store, no-cache, must-revalidate'
     : 's-maxage=60, stale-while-revalidate=120');
   res.setHeader('X-Cache-Store', process.env.DATABASE_URL ? 'neon' : 'none');
+  res.setHeader('X-Range', [start || 'any', end || 'any'].join('..'));
+  res.setHeader('X-Rows', String(rows.length));
+  res.setHeader('X-Dropped-Outside-Range', String(dropped));
   return res.status(200).json(rows);
 }
 
