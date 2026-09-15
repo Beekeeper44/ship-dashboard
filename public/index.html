@@ -504,7 +504,7 @@
   <div class="panel">
     <div class="phead">
       <span class="t">Shipments · <span id="p-count">0</span></span>
-      <span class="r">source: ship_card operation logs · one row per order</span>
+      <span class="r"><span id="p-window"></span>source: ship_card operation logs · one row per order</span>
     </div>
     <div class="scroll">
       <table>
@@ -697,6 +697,18 @@ const prettyDay = iso => new Date(iso + "T12:00:00")
   .toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric", year:"numeric"});
 const spanDays = (a, b) =>
   Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000) + 1;
+
+/* "shipping today" is a lie the moment a past window is loaded. Everything on
+   screen describes the window that was pulled, so the labels should say which
+   window that is. */
+function rangeLabelShort(){
+  const {from, to} = currentRange();
+  const short = (iso) => new Date(iso + "T12:00:00")
+    .toLocaleDateString("en-US", {month:"short", day:"numeric"});
+  if(from === to) return from === TODAY ? "today" : "on " + short(from);
+  if(to === TODAY && from === shiftDay(TODAY, -6)) return "in the last 7 days";
+  return short(from) + " \u2013 " + short(to);
+}
 
 function currentRange(){
   return { from: v("f-start") || TODAY, to: v("f-end") || TODAY };
@@ -1118,7 +1130,8 @@ function render(){
        s:"read the label to resolve", c:"var(--gold)", warn:"var(--gold)"},
     {k:"No tracking",    v:scope.filter(r=>!r.trk).length,
        s:"shipped with no number", c:"var(--red)", warn:"var(--red)"},
-    {k:"Employees",      v:new Set(rows.map(r=>r.who)).size, s:"shipping today", c:"var(--green)"}
+    {k:"Employees",      v:new Set(rows.map(r=>r.who)).size,
+       s:"shipping " + rangeLabelShort(), c:"var(--green)"}
   ].map(x=>`
     <div class="stat">
       <div class="k">${x.k}</div>
@@ -1185,6 +1198,7 @@ function render(){
   document.querySelectorAll("#rows .namebtn").forEach(b=>b.onclick=()=>showModal(b.dataset.emp));
   document.getElementById("empty").hidden = rows.length>0;
   document.getElementById("p-count").textContent = rows.length;
+  document.getElementById("p-window").textContent = rangeLabelShort().replace(/^on /, "") + " \u00b7 ";
   document.getElementById("t-team").textContent = new Set(inRange.map(r=>r.who)).size;
 
   const team = view==="team";
@@ -1193,10 +1207,15 @@ function render(){
   document.getElementById("carriers").hidden = team;
   document.querySelector(".panel:not(#teampanel):not(#detail)").hidden = team && !v("f-emp");
   if(team) renderTeam();
-  document.getElementById("m-orders").textContent = DATA.length;
-  document.getElementById("m-cards").textContent  = DATA.reduce((n,r)=>n+r.cards,0).toLocaleString();
-  document.getElementById("m-asof").textContent   = new Date(TODAY+"T12:00:00")
-    .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+  const scopeRows = dateScoped(DATA);
+  document.getElementById("m-orders").textContent = scopeRows.length.toLocaleString();
+  document.getElementById("m-cards").textContent  = scopeRows.reduce((n,r)=>n+r.cards,0).toLocaleString();
+  {
+    const {from, to} = currentRange();
+    const long = (iso) => new Date(iso + "T12:00:00")
+      .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+    document.getElementById("m-asof").textContent = from === to ? long(from) : long(from) + " \u2013 " + long(to);
+  }
 
   updateRangeUI();
   syncUrl();
