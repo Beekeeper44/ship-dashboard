@@ -16,6 +16,7 @@
 // Metabase API and cached. Set METABASE_DASHBOARD_ID to skip the discovery.
 
 import { getResolvedServices, getEmployeeNames } from './_store.js';
+import { SQL as OWN_SQL } from './_query.js';
 
 const CARD_ID = process.env.METABASE_CARD_ID || '38974';
 
@@ -174,6 +175,77 @@ function dashboardParameters(route, start, end) {
   return out;
 }
 
+/* --------------------------------------------------------- by-name vars ---- */
+
+// The question page accepts ?start_date=…&end_date=…, so the native variables
+// exist — this API key just can't read the card's query definition, which is
+// why /api/card/38974 reports no template tags. Their names are all that's
+// needed: a parameter targets a variable by name, and the tag's UUID `id` is
+// only required for dashboard parameters.
+const DATE_VARS = (process.env.METABASE_DATE_VARS || 'start_date,end_date')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+
+function namedParameters(start, end, withIds) {
+  const [startVar, endVar] = DATE_VARS;
+  const one = (name, value, id) => {
+    const p = { type: 'date/single', target: ['variable', ['template-tag', name]], value };
+    if (withIds) p.id = id;
+    return p;
+  };
+  const out = [];
+  if (startVar && start) out.push(one(startVar, start, 'ship-start'));
+  if (endVar && end) out.push(one(endVar, end, 'ship-end'));
+  return out;
+}
+
+// Some Metabase versions want an `id` on every parameter, others reject one
+// they don't recognise. Try with, fall back to without.
+async function runByName(base, start, end) {
+  let last = null;
+  for (const withIds of [true, false]) {
+    const parameters = namedParameters(start, end, withIds);
+    if (!parameters.length) return { ok: false, url: 'by-name', detail: 'no date variable names configured' };
+    const out = await runQuery(base, { route: null, parameters });
+    if (out.ok) return { ...out, sent: parameters };
+    last = { ...out, sent: parameters };
+  }
+  return last;
+}
+
+/* ----------------------------------------------------------- own query ---- */
+
+// When api/_query.js holds the dashboard's SQL, run it directly. This is the
+// only route that depends on nothing — not the card's variables, not a
+// dashboard's filters, not what the API key can introspect.
+const DB_ID = process.env.METABASE_DB_ID || '397';          // Snowflake APP_PROD
+const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+
+function ownSql(start, end) {
+  if (!OWN_SQL || !OWN_SQL.trim()) return null;
+  if (!isDate(start) || !isDate(end)) return null;
+  return OWN_SQL
+    .replace(/\{\{\s*start_date\s*\}\}/gi, `'${start}'`)
+    .replace(/\{\{\s*end_date\s*\}\}/gi, `'${end}'`);
+}
+
+async function runOwnSql(base, start, end) {
+  const query = ownSql(start, end);
+  if (!query) return { ok: false, url: 'own-sql', detail: 'no SQL in api/_query.js' };
+  const url = `${base}/api/dataset/json`;
+  const body = new URLSearchParams({
+    query: JSON.stringify({ type: 'native', database: Number(DB_ID), native: { query } }),
+  });
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-api-key': process.env.METABASE_API_KEY },
+    body,
+  });
+  if (!r.ok) return { ok: false, status: r.status, url, detail: (await r.text()).slice(0, 400) };
+  const rows = await r.json();
+  if (!Array.isArray(rows)) return { ok: false, url, detail: JSON.stringify(rows).slice(0, 400) };
+  return { ok: true, url, rows };
+}
+
 /* --------------------------------------------------------------- ad-hoc ---- */
 
 // The most dependable route, and the one that needs no discovery at all: run a
@@ -323,10 +395,47 @@ export default async function handler(req, res) {
     ? Object.keys(tags).filter((n) => !cardParameters.some((p) => p.target?.[1]?.[1] === n))
     : [];
 
+  // /api/shipments?cards=1&dashboard=<id> lists every card on a dashboard with
+  // its question id, so the card the dashboard actually renders can be told
+  // apart from whatever METABASE_CARD_ID currently points at.
+  if (req.query.cards) {
+    const dashId = req.query.dashboard || process.env.METABASE_DASHBOARD_ID;
+    if (!dashId) {
+      return res.status(400).json({
+        error: 'need_dashboard_id',
+        detail: 'Call /api/shipments?cards=1&dashboard=<id>, taking <id> from the dashboard URL.',
+      });
+    }
+    const r = await fetch(`${BASE}/api/dashboard/${dashId}`, { headers: headers() });
+    if (!r.ok) {
+      return res.status(502).json({ error: 'dashboard_fetch_failed', status: r.status, detail: (await r.text()).slice(0, 300) });
+    }
+    const dash = await r.json();
+    const dashcards = dash.dashcards || dash.ordered_cards || [];
+    return res.status(200).json({
+      dashboard: { id: dashId, name: dash.name },
+      parameters: (dash.parameters || []).map((p) => ({ id: p.id, name: p.name, slug: p.slug, type: p.type })),
+      cards: dashcards.map((dc) => ({
+        dashcardId: dc.id,
+        cardId: dc.card_id,
+        name: dc.card?.name || null,
+        isCurrentCard: String(dc.card_id) === String(CARD_ID),
+        parameterMappings: (dc.parameter_mappings || []).map((m) => ({ parameter_id: m.parameter_id, target: m.target })),
+      })),
+      currentlyQuerying: CARD_ID,
+    });
+  }
+
   if (debug) {
     return res.status(200).json({
       card: CARD_ID,
       cardName: card.name,
+      ownSqlConfigured: !!(OWN_SQL && OWN_SQL.trim()),
+      // Empty tags with a working ?start_date= on the question page means the
+      // key can run the card but not read its definition. Names are enough.
+      tagsReadable: Object.keys(tags).length > 0,
+      dateVariableNames: DATE_VARS,
+      byNameParameters: namedParameters(start || today, end || today, true),
       queryType: card.queryType,
       via: useDashboard ? 'dashboard' : 'card',
       tags,
@@ -346,7 +455,8 @@ export default async function handler(req, res) {
   // /api/shipments?probe=1&start=…&end=… runs the query twice — once with the
   // parameters, once with none — and reports the date span each returned.
   if (probe) {
-    const [withParams, withoutParams, adhoc] = await Promise.all([
+    const [byName, withParams, withoutParams, adhoc] = await Promise.all([
+      runByName(BASE, start || today, end || today),
       runQuery(BASE, { route: useDashboard ? route : null, parameters }),
       runQuery(BASE, { route: null, parameters: [] }),
       runAdhoc(BASE, card, start || today, end || today),
@@ -363,15 +473,20 @@ export default async function handler(req, res) {
     const a = span(withParams);
     const b = span(withoutParams);
     const c = span(adhoc);
+    const n = span(byName);
     return res.status(200).json({
       via: useDashboard ? 'dashboard' : 'card',
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
+      byName: n,
+      byNameParameters: namedParameters(start || today, end || today, true),
       withParams: a,
       withoutParams: b,
       adhoc: c,
       adhocQuery: adhocQuery(card, start || today, end || today),
       verdict: (() => {
+        if (n.ok && n.rows > 0 && n.latest && n.latest.slice(0, 10) <= (end || today))
+          return 'the named variables honour the range — that is the route the app now uses';
         if (c.ok && c.rows > 0 && c.latest && c.latest.slice(0, 10) <= (end || today))
           return 'the nested ad-hoc query honours the range — that is the route the app now uses';
         if (c.ok && c.rows === 0)
@@ -396,6 +511,8 @@ export default async function handler(req, res) {
     rows.length > 0 && rows.every((r) => { const d = dayOf(r); return !d || (d >= from && d <= to); });
 
   const attempts = [];
+  if (OWN_SQL && OWN_SQL.trim()) attempts.push({ name: 'own-sql', run: () => runOwnSql(BASE, from, to) });
+  if (!hasCardDates) attempts.push({ name: 'by-name', run: () => runByName(BASE, from, to) });
   if (wantsRange) attempts.push({ name: 'adhoc', run: () => runAdhoc(BASE, card, from, to) });
   if (useDashboard) attempts.push({ name: 'dashboard', run: () => runQuery(BASE, { route, parameters }) });
   attempts.push({ name: 'card', run: () => runQuery(BASE, { route: null, parameters: useDashboard ? [] : parameters }) });
