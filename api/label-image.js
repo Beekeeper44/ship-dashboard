@@ -6,12 +6,15 @@
 // canvas taints it unless the source sends CORS headers. Arta doesn't, so we
 // fetch server-side and re-serve it same-origin. Free — no third-party API.
 
-const ALLOWED_HOSTS = new Set([
-  'api.arta.io',
+// Arta serves labels from a few hosts and S3 buckets move between regional
+// endpoints (…s3.us-east-1.amazonaws.com), so match on the registrable domain
+// rather than an exact hostname — an exact list silently 403s every label the
+// day a bucket URL changes shape.
+const ALLOWED_SUFFIXES = [
   'arta.io',
-  's3.amazonaws.com',
-  'arta-uploads-prd-documents.s3.amazonaws.com',
-]);
+  'amazonaws.com',
+  'cloudfront.net',
+];
 
 function formatCandidates(labelUrl) {
   const base = labelUrl.replace(/\?format=.*$/, '');
@@ -37,7 +40,7 @@ export default async function handler(req, res) {
 
   // Only proxy label hosts — don't turn this into an open relay.
   const host = target.hostname.replace(/^www\./, '');
-  const ok = [...ALLOWED_HOSTS].some((h) => host === h || host.endsWith('.' + h));
+  const ok = ALLOWED_SUFFIXES.some((h) => host === h || host.endsWith('.' + h));
   if (!ok) {
     return res.status(403).json({ error: 'host_not_allowed', host });
   }

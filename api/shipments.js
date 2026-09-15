@@ -632,6 +632,11 @@ export default async function handler(req, res) {
       orderUrl: pick(r, 'ORDER_URL') || '',
       trackUrl: pick(r, 'TRACKING_URL') || '',
       label,
+      // The PNG variant is what renders and what OCR reads; the original (often
+      // a PDF) is the fallback and what "open the label" points at. The client
+      // looks for both, and without labelPdf a row with no PNG had nothing to
+      // fall back to.
+      labelPdf: pick(r, 'LABEL_URL') || '',
       gap: typeof who === 'string' && who.startsWith('Unmapped user'),
     };
   });

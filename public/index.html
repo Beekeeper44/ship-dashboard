@@ -96,6 +96,30 @@
   .btn.go{background:var(--green);border-color:var(--green);color:#04210a;font-weight:700}
   .btn.go:hover{background:#5cff3f}
 
+  /* ---------- OCR progress ---------- */
+  .ocrbar{
+    border:1px solid rgba(232,176,75,.45);border-radius:7px;
+    background:rgba(232,176,75,.06);padding:14px 16px;margin-bottom:16px;
+    display:none;flex-direction:column;gap:10px;
+  }
+  .ocrbar.on{display:flex}
+  .ocrbar .line{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  .ocrbar .big{color:var(--gold);font-size:19px;font-weight:700;letter-spacing:.4px}
+  .ocrbar .sub{color:#ffffff;font-size:13px}
+  .ocrbar .now{color:var(--ink);font-size:13px;opacity:.85}
+  .ocrbar .track{height:6px;background:#161616;border-radius:3px;overflow:hidden}
+  .ocrbar .fill{height:100%;width:0;background:var(--gold);transition:width .25s linear}
+  .ocrbar .stop{
+    background:#0d0d0d;border:1px solid rgba(255,90,90,.5);border-radius:5px;color:#ff8a8a;
+    font:inherit;font-size:13px;letter-spacing:.6px;text-transform:uppercase;padding:8px 14px;cursor:pointer;
+  }
+  .ocrbar .stop:hover{background:rgba(255,90,90,.1)}
+  #rows tr.reading{background:rgba(232,176,75,.09)}
+  .src.reading{color:var(--gold)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .src.reading{animation:pulse 1s ease-in-out infinite}
+  .btn.running{border-color:rgba(232,176,75,.6);color:var(--gold)}
+
   /* ---------- date range header ---------- */
   .range{
     border:1px solid var(--line);border-radius:7px;padding:16px 18px;margin-bottom:16px;
@@ -361,13 +385,25 @@
     <span class="push"></span>
     <button class="btn" id="refresh">Refresh ↻</button>
     <select class="btn" id="autorefresh" title="Reload from Metabase on a timer">
-      <option value="0">Auto: off</option>
+      <option value="0" selected>Auto: off</option>
       <option value="30">Auto: 30s</option>
-      <option value="60" selected>Auto: 60s</option>
+      <option value="60">Auto: 60s</option>
       <option value="300">Auto: 5m</option>
     </select>
     <span class="nextin" id="nextin"></span>
     <button class="btn" id="metabase">Open in Metabase ↗</button>
+  </div>
+
+  <!-- ================= OCR progress ================= -->
+  <div class="ocrbar" id="ocrbar">
+    <div class="line">
+      <span class="big" id="ocr-count">0 / 0</span>
+      <span class="sub" id="ocr-stats">starting…</span>
+      <span class="sub" id="ocr-eta"></span>
+      <button class="stop" id="ocr-stop">Stop</button>
+    </div>
+    <div class="track"><div class="fill" id="ocr-fill"></div></div>
+    <div class="now" id="ocr-now"></div>
   </div>
 
   <!-- ================= date range ================= -->
@@ -742,6 +778,38 @@ document.getElementById("r-reset").onclick = () => applyRange(TODAY, TODAY);
 document.getElementById("f-start").onchange = updateRangeUI;
 document.getElementById("f-end").onchange   = updateRangeUI;
 
+/* The window and filters live in the URL, so a reload, a bookmark, or a shared
+   link comes back to the same view instead of resetting to today. */
+const URL_FIELDS = {
+  start: "f-start", end: "f-end", emp: "f-emp", order: "f-order",
+  trk: "f-trk", car: "f-car", min: "f-min", max: "f-max",
+};
+
+function syncUrl(){
+  const q = new URLSearchParams();
+  for(const [key, id] of Object.entries(URL_FIELDS)){
+    const el = document.getElementById(id);
+    if(el && el.value) q.set(key, el.value);
+  }
+  if(view && view !== "today") q.set("view", view);
+  const next = q.toString();
+  const here = location.pathname + (next ? "?" + next : "");
+  if(here !== location.pathname + location.search) history.replaceState(null, "", here);
+}
+
+function readUrlState(){
+  const q = new URLSearchParams(location.search);
+  let any = false;
+  for(const [key, id] of Object.entries(URL_FIELDS)){
+    const val = q.get(key);
+    const el = document.getElementById(id);
+    if(val && el){ el.value = val; any = true; }
+  }
+  const v0 = q.get("view");
+  if(v0){ view = v0; document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view === v0)); }
+  return any;
+}
+
 function setStatus(kind, detail){
   const el = document.getElementById("status");
   el.hidden = false;
@@ -1106,7 +1174,8 @@ function render(){
                 : fmtTrk(r.trk))
             : '<span class="dim">—</span>'}</td>
       <td>${chip(r.carrier)}</td>
-      <td>${r.read==="label" ? '<span class="src read">read from label</span>'
+      <td>${r.read==="reading" ? '<span class="src reading">reading…</span>'
+            : r.read==="label" ? '<span class="src read">read from label</span>'
             : r.read==="pending" ? `<button class="readbtn" onclick="openLabel(${DATA.indexOf(r)})">Check label</button>`
             : '<span class="src">—</span>'}</td>
       <td class="dim mono">${fmtTs(r.ts)}</td>
@@ -1130,6 +1199,7 @@ function render(){
     .toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
 
   updateRangeUI();
+  syncUrl();
 
   document.querySelectorAll("th[data-k]").forEach(th=>{
     th.classList.toggle("on", th.dataset.k===sortKey);
@@ -1162,7 +1232,10 @@ function labelCell(r){
   const urls = labelFormats(raw);
   if(!urls.length) return '<div class="thumb miss">—</div>';
 
-  return `<img class="thumb" src="${urls[0]}" alt="Label ${r.order}"
+  // Through the proxy: Arta sends no CORS headers, the proxy already walks the
+  // format candidates server-side, and going through it means the browser and
+  // the OCR pass share one cached fetch instead of downloading each label twice.
+  return `<img class="thumb" src="${proxied(urls[0])}" alt="Label ${r.order}" loading="lazy"
     onclick="openLabel(${DATA.indexOf(r)})"
     onerror="nextLabel(this, ${JSON.stringify(urls).replace(/"/g,"&quot;")}, '${(r.labelPdf||raw)}')">`;
 }
@@ -1170,7 +1243,7 @@ function labelCell(r){
 /* advance through the format candidates, then degrade to a link */
 window.nextLabel = function(img, urls, pdf){
   const i = (+img.dataset.i || 0) + 1;
-  if(i < urls.length){ img.dataset.i = i; img.src = urls[i]; return; }
+  if(i < urls.length){ img.dataset.i = i; img.src = proxied(urls[i]); return; }
   const a = document.createElement("a");
   a.className = "lnk"; a.href = pdf; a.target = "_blank"; a.rel = "noopener";
   a.textContent = "label"; a.title = "Open the label PDF";
@@ -1314,9 +1387,12 @@ function cropRegions(url){
     img.crossOrigin = "anonymous";
     img.onload = ()=>{
       const W = img.naturalWidth, H = img.naturalHeight;
+      const MAXW = 1100;                       // past this, OCR gets slower, not better
       const make = (sx, sy, sw, sh, scale)=>{
+        const eff = Math.min(scale, MAXW / Math.max(sw, 1));
         const c = document.createElement("canvas");
-        c.width = sw * scale; c.height = sh * scale;
+        c.width = Math.max(1, Math.round(sw * eff));
+        c.height = Math.max(1, Math.round(sh * eff));
         const ctx = c.getContext("2d");
         ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
@@ -1397,18 +1473,28 @@ async function getWorker(){
 }
 function releaseWorker(w){ OCR_POOL.push(w); }
 
+const OCR_TIMEOUT_MS = 20000;
+
+function withTimeout(promise, ms, what){
+  let t;
+  return Promise.race([
+    promise.finally(()=>clearTimeout(t)),
+    new Promise((_, rej)=>{ t = setTimeout(()=>rej(new Error(what + " timed out")), ms); })
+  ]);
+}
+
 async function ocrOne(idx){
   const r = DATA[idx];
   const raw = /^https?:\/\//i.test(r.label||"") ? r.label
             : (/^https?:\/\//i.test(r.labelPdf||"") ? r.labelPdf : "");
   if(!raw) return null;
 
-  const crops = await cropRegions(raw);
+  const crops = await withTimeout(cropRegions(raw), OCR_TIMEOUT_MS, "label image");
   const w = await getWorker();
   try{
     let weak = null;
-    for(const region of ["marker","sscc","service","banner"]){
-      const { data } = await w.recognize(crops[region]);
+    for(const region of ["marker","service","banner","sscc"]){
+      const { data } = await withTimeout(w.recognize(crops[region]), OCR_TIMEOUT_MS, "OCR");
       const [service, conf] = serviceFromText(data.text, region);
       if(service && conf === "high") return { service, confidence:"high", evidence:"ocr:"+region };
       if(service && !weak) weak = { service, region };
@@ -1419,58 +1505,127 @@ async function ocrOne(idx){
   }
 }
 
-/* Batch OCR, several labels at a time. Each worker owns one tesseract
-   instance, so the cost of spinning them up is paid once, not per label. */
+/* Batch OCR over every unverified row in the current pull, several labels at a
+   time. Each worker owns one tesseract instance, so the cost of spinning them
+   up is paid once, not per label.
+
+   At a few thousand labels this runs for a while, so it reports what it is
+   doing rather than freezing a button: a live count, a rate, an ETA, the order
+   being read right now, and a Stop that takes effect on the next label. Rows
+   light up in the table as they're read. Results are written to Neon as they
+   land, so stopping halfway is safe — the work already done is kept, and
+   starting again picks up what's left. */
+let ocrCancel = false;
+
+function ocrProgress(state){
+  const bar = document.getElementById("ocrbar");
+  if(!bar) return;
+  if(state.hide){ bar.classList.remove("on"); return; }
+  bar.classList.add("on");
+  document.getElementById("ocr-count").textContent =
+    state.done.toLocaleString() + " / " + state.total.toLocaleString();
+  document.getElementById("ocr-stats").textContent =
+    state.ok.toLocaleString() + " read \u00b7 " + state.unclear.toLocaleString() + " need a look" +
+    (state.noLabel ? " \u00b7 " + state.noLabel.toLocaleString() + " label didn't load" : "") +
+    (state.rate ? " \u00b7 " + state.rate.toFixed(1) + "/s" : "");
+  document.getElementById("ocr-eta").textContent =
+    state.eta > 0 ? "about " + fmtDuration(state.eta) + " left" : "";
+  document.getElementById("ocr-fill").style.width =
+    (state.total ? Math.round(state.done / state.total * 100) : 0) + "%";
+  document.getElementById("ocr-now").textContent = state.now || "";
+}
+
+function fmtDuration(secs){
+  if(secs < 60) return Math.round(secs) + "s";
+  const m = Math.floor(secs / 60), s = Math.round(secs % 60);
+  if(m < 60) return m + "m " + (s ? s + "s" : "");
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
+
+function ocrTodo(){
+  return DATA.map((r,i)=>[r,i])
+             .filter(([r])=>(r.carrier === "FedEx — unverified" || r.carrier === "Unknown — check")
+                             && (r.label || r.labelPdf))
+             .map(([,i])=>i);
+}
+
 async function ocrAll(){
+  if(ocrRunning) return;
   const btn = document.getElementById("ocr");
-  const todo = DATA.map((r,i)=>[r,i])
-                   .filter(([r])=>(r.carrier === "FedEx — unverified" || r.carrier === "Unknown — check")
-                                   && (r.label || r.labelPdf))
-                   .map(([,i])=>i);
+  const todo = ocrTodo();
   if(!todo.length){ setStatus("loading2","Nothing left to classify"); return; }
 
   ocrRunning = true;
-  btn.disabled = true;
+  ocrCancel = false;
+  btn.classList.add("running");
   const started = Date.now();
-  let ok = 0, weak = 0, failed = 0, done = 0;
+  let ok = 0, weak = 0, failed = 0, done = 0, noLabel = 0;
 
-  const LANES = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+  const report = (now) => {
+    const elapsed = Math.max((Date.now()-started)/1000, 0.5);
+    const rate = done / elapsed;
+    ocrProgress({
+      done, total: todo.length, ok, unclear: weak + failed, noLabel, rate,
+      eta: rate > 0.05 ? (todo.length - done) / rate : 0,
+      now,
+    });
+    btn.textContent = "Stop OCR (" + done + "/" + todo.length + ")";
+  };
+  report("starting workers\u2026");
+
+  const LANES = Math.min(8, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
   const queue = todo.slice();
 
   async function lane(){
-    while(queue.length){
+    while(queue.length && !ocrCancel){
       const i = queue.shift();
+      DATA[i].read = "reading";
+      paintRow(i);
+      report("#" + DATA[i].order + " \u00b7 " + DATA[i].who);
       try{
         const got = await ocrOne(i);
         if(got && got.confidence === "high"){
           DATA[i].carrier = got.service;
           DATA[i].read = "label";
-          paintRow(i);
           ok++;
           recordService(DATA[i].order, got.service, DATA[i].trk);
-        } else if(got){ weak++; } else { failed++; }
+        } else {
+          DATA[i].read = "pending";
+          if(got) weak++; else failed++;
+        }
       }catch(err){
+        DATA[i].read = "pending";
         failed++;
+        if(/label image|wouldn't load|403|404/i.test(err.message)) noLabel++;
         lastReadError = err.message;
         if(failed === 1) setStatus("err", "OCR problem: " + err.message);
       }
+      paintRow(i);
       done++;
-      const rate = done / Math.max((Date.now()-started)/1000, 1);
-      const eta  = Math.round((todo.length - done) / Math.max(rate, 0.01));
-      btn.textContent = done + " / " + todo.length + (eta > 2 ? "  ~" + eta + "s" : "");
-      if(done % 4 === 0) scheduleSummary();
+      report();
+      if(done % 8 === 0) scheduleSummary();
     }
   }
 
   await Promise.all(Array.from({length: Math.min(LANES, todo.length)}, lane));
 
+  // anything still marked reading was cut off by Stop
+  DATA.forEach((r,i)=>{ if(r.read === "reading"){ r.read = "pending"; paintRow(i); } });
+
   render();
   ocrRunning = false;
-  btn.disabled = false;
+  btn.classList.remove("running");
   btn.textContent = "Read labels (OCR)";
+  ocrProgress({hide:true});
+
   const secs = Math.round((Date.now()-started)/1000);
-  setStatus("loading2", "OCR done in " + secs + "s — " + ok + " read, " +
-    (weak + failed) + " need a look. Use Classify labels for those.");
+  const left = todo.length - done;
+  setStatus("loading2", ocrCancel
+    ? "Stopped after " + done.toLocaleString() + " of " + todo.length.toLocaleString() +
+      " \u2014 " + ok.toLocaleString() + " read and saved, " + left.toLocaleString() +
+      " still unread. Click Read labels to carry on."
+    : "OCR done in " + fmtDuration(secs) + " \u2014 " + ok.toLocaleString() + " read, " +
+      (weak + failed).toLocaleString() + " need a look. Use Classify labels for those.");
   startAutoRefresh();
 }
 
@@ -1643,7 +1798,12 @@ function paintRow(idx){
   if(!tr) return;
   const tds = tr.children;
   tds[5].innerHTML = chip(r.carrier);
-  tds[6].innerHTML = '<span class="src read">read from label</span>';
+  tds[6].innerHTML =
+    r.read === "reading" ? '<span class="src reading">reading…</span>'
+    : r.read === "label" ? '<span class="src read">read from label</span>'
+    : r.read === "pending" ? '<button class="readbtn" onclick="openLabel(' + idx + ')">Check label</button>'
+    : '—';
+  tr.classList.toggle("reading", r.read === "reading");
 }
 
 /* Batch read. Runs a few at a time so the browser stays responsive and we
@@ -1698,7 +1858,19 @@ async function readAllUnverified(opts){
   return { ok, failed };
 }
 
-document.getElementById("ocr").onclick = ()=>ocrAll();
+document.getElementById("ocr").onclick = ()=>{
+  if(ocrRunning){                      // second click stops it
+    ocrCancel = true;
+    document.getElementById("ocr").textContent = "Stopping\u2026";
+    document.getElementById("ocr-now").textContent = "finishing the labels already in flight\u2026";
+    return;
+  }
+  ocrAll();
+};
+document.getElementById("ocr-stop").onclick = ()=>{
+  ocrCancel = true;
+  document.getElementById("ocr-now").textContent = "finishing the labels already in flight\u2026";
+};
 document.getElementById("autoocr").onchange = e=>{ if(e.target.checked) maybeAutoOcr(); };
 document.getElementById("classify").onclick = ()=>{
   lbIdx = -1;
@@ -1723,13 +1895,14 @@ document.getElementById("apply").onclick = async ()=>{
   render();                  // then applies the client-side filters
   b.textContent = was; b.disabled = false;
 };
+/* Clear drops the row filters and leaves the date window alone — the window is
+   what was loaded from Metabase, and resetting it to today meant every clear
+   threw away the pull and went back for a different one. Only the logo resets
+   the window. */
 document.getElementById("clear").onclick = ()=>{
   ["f-emp","f-order","f-trk","f-car","f-min","f-max"].forEach(id=>document.getElementById(id).value="");
-  const today = (typeof TODAY !== "undefined") ? TODAY : new Date().toISOString().slice(0,10);
-  document.getElementById("f-start").value = today;
-  document.getElementById("f-end").value = today;
   document.getElementById("detail").hidden = true;
-  if(LIVE) loadLive(); else render();
+  render();
 };
 let typeTimer;
 ["f-order","f-trk","f-min","f-max"].forEach(id=>{
@@ -1753,6 +1926,8 @@ document.getElementById("f-emp").onchange = e => {
 let refreshTimer = null, nextAt = 0;
 
 function stopAutoRefresh(){
+  const hint = document.getElementById("nextin");
+  if(hint) hint.textContent = "";
   if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
   nextAt = 0;
   document.getElementById("nextin").textContent = "";
@@ -1799,6 +1974,7 @@ document.getElementById("home").onclick = ()=>{
   document.getElementById("detail").hidden = true;
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view==="today"));
   view = "today"; sortKey = "ts"; sortDir = -1;
+  history.replaceState(null, "", location.pathname);   // drop the saved window too
   loadLive();
   window.scrollTo({top:0,behavior:"smooth"});
 };
@@ -1816,7 +1992,8 @@ document.getElementById("csv").onclick = ()=>{
 
 /* employee list */
 
-/* default the date range to today so the filters show what's on screen */
+/* A window in the URL wins; otherwise default to today. */
+readUrlState();
 (function initDates(){
   const today = (typeof TODAY !== "undefined") ? TODAY : new Date().toISOString().slice(0,10);
   const s = document.getElementById("f-start"), e = document.getElementById("f-end");
