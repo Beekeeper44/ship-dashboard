@@ -100,12 +100,11 @@
   /* The native picker button is a dim grey square on a dark background — easy
      to miss. Brighten it, and put a calendar in front of the text so the field
      reads as a date at a glance. */
-  .cal{position:relative;display:inline-flex;align-items:center}
-  .cal .ico{
-    position:absolute;left:10px;font-size:15px;line-height:1;pointer-events:none;
-    opacity:.9;filter:saturate(.9);
-  }
-  .cal input[type=date]{padding-left:32px}
+  /* The icon sits beside the field, not on top of it — absolute positioning
+     put it over the month digits, and the input's own padding rule won on
+     specificity so the text never moved out from under it. */
+  .cal{display:inline-flex;align-items:center;gap:8px}
+  .cal .ico{font-size:15px;line-height:1;pointer-events:none;opacity:.9}
   input[type=date]::-webkit-calendar-picker-indicator{
     filter:invert(1) brightness(1.4);opacity:.75;cursor:pointer;
   }
@@ -1586,6 +1585,12 @@ function cropRegions(url){
   });
 }
 
+// Printed on the labels next to the marker and easy to mistake for one:
+// ETD and REL# on Ground, RES on Express, the (GB)/(CA) origin codes, and the
+// header fields. Their letters are what turn a clean Ground read into a
+// contradiction, so they come out before any single-letter test.
+const MARKER_NOISE = /\b(ETD|REL|RES|GB|CA|US|AC|TRK|INV|PO|DEPT|REF|CAD|DIMS|ACTWGT|BILL|SENDER|ORIGIN|ID|LB|IN)\b/g;
+
 function serviceFromText(t, region){
   const s = (t || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
   if(!s) return [null, null];
@@ -1598,12 +1603,18 @@ function serviceFromText(t, region){
   // Printed wordmarks — most direct. Tesseract slips on a few of these
   // predictably (O/0, S/5, B/R), so the patterns allow for it.
   if(/HOME ?DELIVERY|H0ME ?DELIVERY/.test(s))          return ["FedEx Home", "high"];
-  if(/GROUND|GROUNO|GR0UND|GR OUND/.test(s))           return ["FedEx Ground", "high"];
+
+  // The word under the FedEx wordmark is the single most reliable thing on the
+  // label — "Express" or "Ground" in small type. It is small type, though, so
+  // allow for the substitutions tesseract actually makes on it.
+  if(/GROUND|GROUNO|GR0UND|GR OUND|6ROUND|GHOUND|GROIJND|GROUNI/.test(s))
+                                                        return ["FedEx Ground", "high"];
 
   // Every Express service name that appears under the wordmark or in the
   // service band: the tier line ("** 2DAY **", "PRIORITY OVERNIGHT"), the
   // wordmark subtitle ("Express"), and the international variants.
-  if(/EXPRESS|EXPRES|EXPBESS|EXPRE55/.test(s))         return ["FedEx Express", "high"];
+  if(/EXPRESS|EXPRES|EXPBESS|EXPRE55|FXPRESS|EXPRFSS|EXPHESS/.test(s))
+                                                        return ["FedEx Express", "high"];
   if(/\b\d ?DAY\b|\bTWO ?DAY\b/.test(s))              return ["FedEx Express", "high"];
   if(/OVERNIGHT|0VERNIGHT/.test(s))                    return ["FedEx Express", "high"];
   if(/SAVER|FIRST ?OVERNIGHT|PRIORITY ?OVERNIGHT|STANDARD ?OVERNIGHT/.test(s))
@@ -1624,8 +1635,14 @@ function serviceFromText(t, region){
   // label a stray letter could be anything, so it only counts as a hint.
   // "ETD" and "RES" are printed on Ground labels; the word-boundary test keeps
   // their letters from being mistaken for a marker.
-  const isolated = ch => new RegExp("(^| )" + ch + "( |$)").test(s);
-  const G = isolated("G"), H = isolated("H"), E = isolated("E");
+  // Strip the printed noise first, then look for the boxed glyph. The box is
+  // huge and heavy, and tesseract's usual slips on it are predictable: a boxed
+  // G comes back as 6, C or 0; a boxed E as F, B or 8. Those substitutions are
+  // allowed for G and H, but not for E — F and B are too common elsewhere on
+  // the label to risk calling something Express on one letter.
+  const clean = s.replace(MARKER_NOISE, " ").replace(/\s+/g, " ").trim();
+  const isolated = pat => new RegExp("(^| )(" + pat + ")( |$)").test(clean);
+  const G = isolated("G|6|GJ"), H = isolated("H|HD"), E = isolated("E");
   const conf = region === "marker" ? "high" : "low";
 
   if(G && !E) return ["FedEx Ground",  conf];
