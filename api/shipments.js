@@ -211,7 +211,7 @@ const BYNAME_TYPES = ['date/single', 'category', 'date/all-options'];
 
 async function runByName(base, start, end) {
   if (!DATE_VARS.length) return { ok: false, url: 'by-name', detail: 'no date variable names configured' };
-  const dayOf = (r) => String(r.COMPLETED_AT || r.completed_at || '').slice(0, 10);
+  const dayOf = (r) => normalizeStamp(r.COMPLETED_AT ?? r.completed_at).slice(0, 10);
   let fallback = null;
 
   for (const type of BYNAME_TYPES) {
@@ -248,12 +248,13 @@ function ownSql(start, end) {
     .replace(/\{\{\s*end_date\s*\}\}/gi, `'${end}'`);
 }
 
-async function runOwnSql(base, start, end) {
+async function runOwnSql(base, start, end, databaseId) {
   const query = ownSql(start, end);
   if (!query) return { ok: false, url: 'own-sql', detail: 'no SQL in api/_query.js' };
   const url = `${base}/api/dataset/json`;
   const body = new URLSearchParams({
-    query: JSON.stringify({ type: 'native', database: Number(DB_ID), native: { query } }),
+    query: JSON.stringify({ type: 'native', database: Number(databaseId || DB_ID), native: { query } }),
+    format_rows: 'false',
   });
   const r = await fetch(url, {
     method: 'POST',
@@ -306,7 +307,10 @@ function adhocQuery(card, start, end) {
 async function runAdhoc(base, card, start, end) {
   if (!card.databaseId) return { ok: false, url: 'adhoc', detail: 'no database id on the card' };
   const url = `${base}/api/dataset/json`;
-  const body = new URLSearchParams({ query: JSON.stringify(adhocQuery(card, start, end)) });
+  const body = new URLSearchParams({
+    query: JSON.stringify(adhocQuery(card, start, end)),
+    format_rows: 'false',
+  });
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-api-key': process.env.METABASE_API_KEY },
@@ -325,10 +329,13 @@ async function runQuery(base, { route, parameters }) {
     ? `${base}/api/dashboard/${route.dashboardId}/dashcard/${route.dashcardId}/card/${CARD_ID}/query/json`
     : `${base}/api/card/${CARD_ID}/query/json`;
 
+  // format_rows:false keeps timestamps as ISO instead of "Sep 11, 2026, 5:13 PM".
+  // Export endpoints format by default, and a formatted date is unparseable to
+  // every date comparison downstream.
   const r = await fetch(url, {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({ parameters }),
+    body: JSON.stringify({ parameters, format_rows: false }),
   });
   if (!r.ok) {
     return { ok: false, status: r.status, url, detail: (await r.text()).slice(0, 600) };
@@ -340,8 +347,24 @@ async function runQuery(base, { route, parameters }) {
   return { ok: true, url, rows };
 }
 
+// A timestamp can arrive as ISO, as "September 11, 2026, 5:13 PM", or as
+// "2026-09-11 17:13:00" depending on the route and the export settings.
+// Normalise once, here, so every comparison downstream — the window check, the
+// clamp, and the browser's own date filtering — works on the same shape.
+export function normalizeStamp(v) {
+  if (v === null || v === undefined) return '';
+  const raw = String(v).trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw;          // already ISO
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T` +
+         `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 const stampsOf = (rows) =>
-  rows.map((x) => x.COMPLETED_AT || x.completed_at || x.Completed_At).filter(Boolean).map(String).sort();
+  rows.map((x) => normalizeStamp(x.COMPLETED_AT ?? x.completed_at ?? x.Completed_At)).filter(Boolean).sort();
 
 /* ------------------------------------------------------------- handler ---- */
 
@@ -475,11 +498,12 @@ export default async function handler(req, res) {
   // /api/shipments?probe=1&start=…&end=… runs the query twice — once with the
   // parameters, once with none — and reports the date span each returned.
   if (probe) {
-    const [byName, withParams, withoutParams, adhoc] = await Promise.all([
+    const [byName, withParams, withoutParams, adhoc, own] = await Promise.all([
       runByName(BASE, start || today, end || today),
       runQuery(BASE, { route: useDashboard ? route : null, parameters }),
       runQuery(BASE, { route: null, parameters: [] }),
       runAdhoc(BASE, card, start || today, end || today),
+      runOwnSql(BASE, start || today, end || today, card.databaseId),
     ]);
     const span = (r) => r.ok
       ? {
@@ -494,10 +518,12 @@ export default async function handler(req, res) {
     const b = span(withoutParams);
     const c = span(adhoc);
     const n = span(byName);
+    const o = span(own);
     return res.status(200).json({
       via: useDashboard ? 'dashboard' : 'card',
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
+      ownSql: o,
       byName: n,
       byNameVariant: byName.variant || null,
       byNameSent: byName.sent || null,
@@ -506,6 +532,8 @@ export default async function handler(req, res) {
       adhoc: c,
       adhocQuery: adhocQuery(card, start || today, end || today),
       verdict: (() => {
+        if (o.ok && o.rows > 0)
+          return 'the embedded SQL returns the window directly — that is the route the app uses first';
         if (n.ok && n.rows > 0 && n.latest && n.latest.slice(0, 10) <= (end || today))
           return 'the named variables honour the range — that is the route the app now uses';
         if (c.ok && c.rows > 0 && c.latest && c.latest.slice(0, 10) <= (end || today))
@@ -527,12 +555,12 @@ export default async function handler(req, res) {
   const from = start || today;
   const to = end || today;
   const wantsRange = !!(start || end);
-  const dayOf = (r) => String(r.COMPLETED_AT || r.completed_at || '').slice(0, 10);
+  const dayOf = (r) => normalizeStamp(r.COMPLETED_AT ?? r.completed_at).slice(0, 10);
   const inWindow = (rows) =>
     rows.length > 0 && rows.every((r) => { const d = dayOf(r); return !d || (d >= from && d <= to); });
 
   const attempts = [];
-  if (OWN_SQL && OWN_SQL.trim()) attempts.push({ name: 'own-sql', run: () => runOwnSql(BASE, from, to) });
+  if (OWN_SQL && OWN_SQL.trim()) attempts.push({ name: 'own-sql', run: () => runOwnSql(BASE, from, to, card.databaseId) });
   if (!hasCardDates) attempts.push({ name: 'by-name', run: () => runByName(BASE, from, to) });
   if (wantsRange) attempts.push({ name: 'adhoc', run: () => runAdhoc(BASE, card, from, to) });
   if (useDashboard) attempts.push({ name: 'dashboard', run: () => runQuery(BASE, { route, parameters }) });
@@ -540,17 +568,38 @@ export default async function handler(req, res) {
 
   let result = null;
   let via = null;
+  let honoured = !wantsRange;
   const tried = [];
   for (const a of attempts) {
     const out = await a.run();
-    tried.push({ route: a.name, ok: out.ok, rows: out.ok ? out.rows.length : null, detail: out.ok ? null : (out.detail || out.status) });
+    const ok = out.ok && (!wantsRange || inWindow(out.rows) || out.rows.length === 0);
+    tried.push({
+      route: a.name,
+      ok: out.ok,
+      rows: out.ok ? out.rows.length : null,
+      honouredRange: out.ok ? ok : null,
+      detail: out.ok ? null : (out.detail || out.status),
+    });
     if (!out.ok) continue;
     result = out; via = a.name;
-    if (!wantsRange || inWindow(out.rows)) break;      // good enough, stop here
+    if (ok) { honoured = true; break; }               // stop at the first route that respected the window
   }
 
   if (!result) {
     return res.status(502).json({ error: 'metabase_failed', tried, sentParameters: parameters });
+  }
+
+  // Every route ran but none respected the window. Say so instead of serving an
+  // empty table — a silent zero reads as "no shipments that week", which is a
+  // different and much more misleading thing.
+  if (!honoured) {
+    return res.status(502).json({
+      error: 'range_ignored',
+      detail: `Every route returned rows outside ${from}..${to}. The window was not applied.`,
+      requested: { start: from, end: to },
+      tried,
+      sentParameters: parameters,
+    });
   }
 
   // Whatever route answered, never show rows from outside the requested window.
@@ -579,7 +628,7 @@ export default async function handler(req, res) {
       order: String(pick(r, 'ORDER_NUMBER') ?? ''),
       cards: Number(pick(r, 'CARDS_SHIPPED') ?? 0),
       trk: pick(r, 'TRACKING_NUMBER') || '',
-      ts: pick(r, 'COMPLETED_AT') || '',
+      ts: normalizeStamp(pick(r, 'COMPLETED_AT')),
       orderUrl: pick(r, 'ORDER_URL') || '',
       trackUrl: pick(r, 'TRACKING_URL') || '',
       label,
