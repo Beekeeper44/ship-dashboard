@@ -96,6 +96,21 @@
   .btn.go{background:var(--green);border-color:var(--green);color:#04210a;font-weight:700}
   .btn.go:hover{background:#5cff3f}
 
+  /* ---------- date fields ---------- */
+  /* The native picker button is a dim grey square on a dark background — easy
+     to miss. Brighten it, and put a calendar in front of the text so the field
+     reads as a date at a glance. */
+  .cal{position:relative;display:inline-flex;align-items:center}
+  .cal .ico{
+    position:absolute;left:10px;font-size:15px;line-height:1;pointer-events:none;
+    opacity:.9;filter:saturate(.9);
+  }
+  .cal input[type=date]{padding-left:32px}
+  input[type=date]::-webkit-calendar-picker-indicator{
+    filter:invert(1) brightness(1.4);opacity:.75;cursor:pointer;
+  }
+  input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1}
+
   /* ---------- OCR progress ---------- */
   .ocrbar{
     border:1px solid rgba(232,176,75,.45);border-radius:7px;
@@ -162,6 +177,8 @@
   /* ---------- stat strip ---------- */
   .stats[hidden]{display:none}
   .stats{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-bottom:20px;flex-wrap:wrap}
+  .stat.click{cursor:pointer;transition:border-color .12s,background .12s}
+  .stat.click:hover{background:#0b0b0b}
   .stat{flex:1 1 250px;min-width:225px;padding:24px 26px 30px;border-right:1px solid var(--line);position:relative}
   .stat:last-child{border-right:none}
   .stat .k{color:#ffffff;font-size:17px;font-weight:600;letter-spacing:1.1px;text-transform:uppercase}
@@ -302,6 +319,7 @@
   .src.read{color:var(--green)}
   .src.pend{color:var(--gold)}
 
+  .readbtn.read{border-color:rgba(66,255,66,.35);color:var(--green)}
   .readbtn{
     background:transparent;border:1px solid var(--line);color:var(--gold);border-radius:3px;
     font:inherit;font-size:12px;letter-spacing:.6px;text-transform:uppercase;padding:6px 11px;cursor:pointer;
@@ -673,11 +691,8 @@ function snapRangeToData(){
   const s = v("f-start"), e = v("f-end");
   const noOverlap = (s && hi < s) || (e && lo > e);
   if(!noOverlap) return null;
-  document.getElementById("f-start").value = lo;
-  document.getElementById("f-end").value   = hi;
-  if(view === "today" && lo !== TODAY){          // today's tab would also be empty
-    selectView("range");
-  }
+  // Report the mismatch, don't rewrite the window — moving the dates under
+  // someone mid-classify is how a Sep 8 session ends up on today.
   return {lo, hi};
 }
 
@@ -757,6 +772,7 @@ async function applyRange(from, to){
   if(from > to) [from, to] = [to, from];
   document.getElementById("f-start").value = from;
   document.getElementById("f-end").value   = to;
+  lockWindow();
   selectView((from === to && from === TODAY) ? "today" : "range");
   updateRangeUI();
   await loadLive();
@@ -797,6 +813,58 @@ const URL_FIELDS = {
   trk: "f-trk", car: "f-car", min: "f-min", max: "f-max",
 };
 
+/* The URL is the record of the window, but a reload that lands before any
+   render — or a browser that drops the query string — would still open on
+   today. sessionStorage is the backstop: the window survives a refresh, a back
+   navigation out of a label, and a crash, and only the logo clears it. */
+const WINDOW_KEY = "shipdash.window";
+
+/* The window only ever changes when you change it: a preset, Load range, the
+   specific-day picker, the Start/End fields, or the logo. Anything else that
+   touches those inputs — a snap after a load, a stray re-render mid-classify —
+   gets put back. LOCKED is what you last chose; render re-asserts it. */
+let LOCKED = null;
+
+function lockWindow(){
+  LOCKED = { start: v("f-start"), end: v("f-end") };
+  saveWindow();
+}
+
+function enforceWindow(){
+  if(!LOCKED) return;
+  const s = document.getElementById("f-start"), e = document.getElementById("f-end");
+  if(s.value !== LOCKED.start) s.value = LOCKED.start;
+  if(e.value !== LOCKED.end)   e.value = LOCKED.end;
+}
+
+function saveWindow(){
+  try{
+    sessionStorage.setItem(WINDOW_KEY, JSON.stringify({
+      start: v("f-start"), end: v("f-end"), view,
+    }));
+  }catch{}
+}
+
+function restoreWindow(){
+  try{
+    const raw = sessionStorage.getItem(WINDOW_KEY);
+    if(!raw) return false;
+    const w = JSON.parse(raw);
+    if(!w || !w.start || !w.end) return false;
+    document.getElementById("f-start").value = w.start;
+    document.getElementById("f-end").value = w.end;
+    if(w.view){
+      view = w.view;
+      document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view === w.view));
+    }
+    return true;
+  }catch{ return false; }
+}
+
+function clearWindow(){
+  try{ sessionStorage.removeItem(WINDOW_KEY); }catch{}
+}
+
 function syncUrl(){
   const q = new URLSearchParams();
   for(const [key, id] of Object.entries(URL_FIELDS)){
@@ -807,6 +875,7 @@ function syncUrl(){
   const next = q.toString();
   const here = location.pathname + (next ? "?" + next : "");
   if(here !== location.pathname + location.search) history.replaceState(null, "", here);
+  saveWindow();
 }
 
 function readUrlState(){
@@ -837,9 +906,8 @@ function setStatus(kind, detail){
     setTimeout(()=>{ el.hidden = true; }, 4000);
   } else if(kind === "range"){
     el.className = "status sample";
-    el.innerHTML = '<span class="d"></span><span><b>Showing ' + detail + '.</b> ' +
-      'The card returned a different range than the one requested, so the date filters were moved to match it — ' +
-      'check <code>/api/shipments?debug=1</code> to see which variables it actually received.</span>';
+    el.innerHTML = '<span class="d"></span><span><b>The query came back with ' + detail + '</b>, outside the window you asked for. ' +
+      'Your dates were left alone — check <code>/api/shipments?debug=1</code> to see what the query received.</span>';
   } else if(kind === "err"){
     el.className = "status err";
     el.innerHTML = '<span class="d"></span><span><b>Load failed.</b> ' + detail +
@@ -945,6 +1013,82 @@ function renderTeam(){
       renderTeam(); };
   });
 }
+
+/* Clicking a stat opens what it is made of: the same rows, cut by carrier, by
+   person and by day. Uses the filtered set, so whatever is already narrowed
+   down stays narrowed down. */
+function statBreakdown(kind){
+  const rows = filtered({ignoreCarrier: kind === "Orders shipped" || kind === "Cards shipped"});
+  const subject = kind === "Cards shipped" ? "cards" : "orders";
+
+  const pick = {
+    "Unverified service": r => r.carrier === "FedEx — unverified",
+    "No tracking":        r => !r.trk,
+  }[kind];
+  const set = pick ? rows.filter(pick) : rows;
+  if(!set.length){ return; }
+
+  const total = subject === "cards" ? set.reduce((n,r)=>n+r.cards,0) : set.length;
+  const val = (list) => subject === "cards" ? list.reduce((n,r)=>n+r.cards,0) : list.length;
+
+  const group = (keyOf) => {
+    const m = {};
+    set.forEach(r=>{ const k = keyOf(r); (m[k] = m[k] || []).push(r); });
+    return Object.entries(m)
+      .map(([k, list])=>({ k, n: val(list), orders: list.length, cards: list.reduce((n,r)=>n+r.cards,0) }))
+      .sort((a,b)=>b.n - a.n);
+  };
+
+  const byCarrier  = group(r=>r.carrier);
+  const byEmployee = group(r=>r.who).slice(0, 10);
+  const byDay      = group(r=>r.ts.slice(0,10)).sort((a,b)=> a.k < b.k ? 1 : -1).slice(0, 10);
+
+  const pct = n => total ? Math.round(n / total * 100) : 0;
+  const bar = byCarrier.map(c=>'<i style="width:'+pct(c.n)+'%;background:'+(TINTS[c.k]||"#fff")+'"></i>').join("");
+
+  const carrierRows = byCarrier.map(c=>
+    '<div class="mrow"><i style="background:'+(TINTS[c.k]||"#fff")+'"></i><span>'+c.k+'</span>'
+    +'<b>'+c.orders.toLocaleString()+'</b><em>'+c.cards.toLocaleString()+' cards</em>'
+    +'<s>'+pct(c.n)+'%</s></div>').join("");
+
+  const simple = (list, unit) => {
+    const max = Math.max.apply(null, list.map(x=>x.n).concat([1]));
+    return list.map(x=>
+      '<div class="dayrow"><span>'+x.k+'</span>'
+      +'<span class="track"><i style="width:'+(x.n/max*100)+'%"></i></span>'
+      +'<b>'+x.n.toLocaleString()+'</b></div>').join("");
+  };
+
+  document.getElementById("mbox").innerHTML =
+    '<div class="mtop"><div><h3>'+kind+'</h3>'
+    +'<div style="margin-top:8px;font-size:15px;color:#ffffff">'
+    + total.toLocaleString() + ' ' + subject + ' \u00b7 ' + rangeLabelShort() + '</div></div>'
+    +'<button class="x" onclick="closeModal()">&#10005;</button></div>'
+    +'<div class="mgrid">'
+    +'<div><div class="k">Orders</div><div class="v">'+set.length.toLocaleString()+'</div></div>'
+    +'<div><div class="k">Cards</div><div class="v">'+set.reduce((n,r)=>n+r.cards,0).toLocaleString()+'</div></div>'
+    +'<div><div class="k">People</div><div class="v">'+new Set(set.map(r=>r.who)).size+'</div></div>'
+    +'<div><div class="k">Carriers</div><div class="v">'+byCarrier.length+'</div></div>'
+    +'</div>'
+    +'<div class="msec"><h5>By carrier</h5><div class="mbar">'+bar+'</div>'+carrierRows+'</div>'
+    +'<div class="msec" style="border-top:1px solid var(--line)"><h5>By employee \u00b7 '+subject+'</h5>'
+    + simple(byEmployee) + '</div>'
+    +'<div class="msec" style="border-top:1px solid var(--line)"><h5>By day \u00b7 '+subject+'</h5>'
+    + simple(byDay) + '</div>'
+    +'<div class="msec" style="border-top:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap">'
+    + (pick ? '<button class="btn go" id="mb-filter">Show these in the table</button>' : '')
+    +'<button class="btn" onclick="closeModal()">Close</button></div>';
+
+  const jump = document.getElementById("mb-filter");
+  if(jump) jump.onclick = ()=>{
+    closeModal();
+    const tab = kind === "No tracking" ? "notrack" : "unverified";
+    document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view === tab));
+    view = tab; render();
+  };
+  document.getElementById("modal").classList.add("on");
+}
+window.statBreakdown = statBreakdown;
 
 function showModal(name){
   const rows = DATA.filter(r=>r.who===name);
@@ -1133,12 +1277,16 @@ function render(){
     {k:"Employees",      v:new Set(rows.map(r=>r.who)).size,
        s:"shipping " + rangeLabelShort(), c:"var(--green)"}
   ].map(x=>`
-    <div class="stat">
+    <div class="stat click" data-stat="${x.k}" title="Click for the breakdown">
       <div class="k">${x.k}</div>
       <div class="v" style="color:${x.warn||"var(--ink)"}">${x.v.toLocaleString()}</div>
       <div class="s">${x.s}</div>
       <div class="rule" style="background:${x.c}"></div>
     </div>`).join("");
+
+  document.querySelectorAll(".stat.click").forEach(el=>{
+    el.onclick = ()=>statBreakdown(el.dataset.stat);
+  });
 
   // carrier tiles — click one to filter the table
   const TINT = {
@@ -1188,7 +1336,7 @@ function render(){
             : '<span class="dim">—</span>'}</td>
       <td>${chip(r.carrier)}</td>
       <td>${r.read==="reading" ? '<span class="src reading">reading…</span>'
-            : r.read==="label" ? '<span class="src read">read from label</span>'
+            : r.read==="label" ? `<button class="readbtn read" title="Wrong? Open the label and set it" onclick="openLabel(${DATA.indexOf(r)})">read from label</button>`
             : r.read==="pending" ? `<button class="readbtn" onclick="openLabel(${DATA.indexOf(r)})">Check label</button>`
             : '<span class="src">—</span>'}</td>
       <td class="dim mono">${fmtTs(r.ts)}</td>
@@ -1217,6 +1365,7 @@ function render(){
     document.getElementById("m-asof").textContent = from === to ? long(from) : long(from) + " \u2013 " + long(to);
   }
 
+  enforceWindow();
   updateRangeUI();
   syncUrl();
 
@@ -1446,10 +1595,21 @@ function serviceFromText(t, region){
   if(/\bDHL\b/.test(s))                     return ["DHL", "high"];
   if(/\b1Z[A-Z0-9]{8,}/.test(s))             return ["UPS", "high"];
 
-  // Printed wordmarks — most direct.
-  if(/HOME ?DELIVERY/.test(s))              return ["FedEx Home", "high"];
-  if(/GROUND|GROUNO|GR0UND/.test(s))        return ["FedEx Ground", "high"];   // common OCR slips
-  if(/EXPRESS|2 ?DAY|OVERNIGHT|EXPRESS ?SAVER/.test(s)) return ["FedEx Express", "high"];
+  // Printed wordmarks — most direct. Tesseract slips on a few of these
+  // predictably (O/0, S/5, B/R), so the patterns allow for it.
+  if(/HOME ?DELIVERY|H0ME ?DELIVERY/.test(s))          return ["FedEx Home", "high"];
+  if(/GROUND|GROUNO|GR0UND|GR OUND/.test(s))           return ["FedEx Ground", "high"];
+
+  // Every Express service name that appears under the wordmark or in the
+  // service band: the tier line ("** 2DAY **", "PRIORITY OVERNIGHT"), the
+  // wordmark subtitle ("Express"), and the international variants.
+  if(/EXPRESS|EXPRES|EXPBESS|EXPRE55/.test(s))         return ["FedEx Express", "high"];
+  if(/\b\d ?DAY\b|\bTWO ?DAY\b/.test(s))              return ["FedEx Express", "high"];
+  if(/OVERNIGHT|0VERNIGHT/.test(s))                    return ["FedEx Express", "high"];
+  if(/SAVER|FIRST ?OVERNIGHT|PRIORITY ?OVERNIGHT|STANDARD ?OVERNIGHT/.test(s))
+                                                        return ["FedEx Express", "high"];
+  if(/\bINTL\b.*\b(PRIORITY|ECONOMY|FIRST)\b|\bIP\b|\bIE\b/.test(s))
+                                                        return ["FedEx Express", "high"];
 
   // SSCC-18: Ground and Home labels carry a second long number starting 96.
   // Express never does. Big clean digits, so OCR reads these well.
@@ -1512,16 +1672,64 @@ async function ocrOne(idx){
   const w = await getWorker();
   try{
     let weak = null;
+
     for(const region of ["marker","service","banner","sscc"]){
       const { data } = await withTimeout(w.recognize(crops[region]), OCR_TIMEOUT_MS, "OCR");
-      const [service, conf] = serviceFromText(data.text, region);
-      if(service && conf === "high") return { service, confidence:"high", evidence:"ocr:"+region };
+      const text = data.text || "";
+      const [service, conf] = serviceFromText(text, region);
+
+      // A printed service name settles it — take it and stop.
+      if(service && conf === "high" && wordEvidence(text)){
+        return { service, confidence:"high", evidence:"ocr:" + region };
+      }
+
+      // A lone boxed letter is the weakest kind of evidence: tesseract turns a
+      // boxed E into B, F or 8 often enough to matter, and getting Express vs
+      // Ground wrong is the whole point of reading the label. So a letter has
+      // to be corroborated by a printed word somewhere else on the label
+      // before it counts as settled.
+      if(service && conf === "high"){
+        const corroboration = await corroborate(w, crops, region);
+        if(corroboration && corroboration !== service){
+          weak = { service: corroboration, region: "conflict" };   // words beat letters
+          continue;
+        }
+        return {
+          service: corroboration || service,
+          confidence: corroboration ? "high" : "low",
+          evidence: corroboration ? "ocr:" + region + "+word" : "ocr:" + region + ":letter-only",
+        };
+      }
       if(service && !weak) weak = { service, region };
     }
-    return weak ? { service: weak.service, confidence:"low", evidence:"ocr:weak" } : null;
+    return weak ? { service: weak.service, confidence: weak.region === "conflict" ? "high" : "low",
+                    evidence: "ocr:" + weak.region } : null;
   } finally {
     releaseWorker(w);
   }
+}
+
+/* Did this text carry an actual printed service name, as opposed to a single
+   marker letter? */
+function wordEvidence(text){
+  const s = (text || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ");
+  return /EXPRESS|EXPRES|EXPBESS|GROUND|GROUNO|HOME ?DELIVERY|OVERNIGHT|SAVER|\d ?DAY|USPS|PRIORITY MAIL|DHL/.test(s)
+      || /\b96\d{6,}/.test(s.replace(/ /g, ""));
+}
+
+/* Read the other regions looking for a printed name to back up (or overturn) a
+   marker letter. Returns the service a word supports, or null if none says. */
+async function corroborate(worker, crops, skipRegion){
+  for(const region of ["service","marker","banner","sscc"]){
+    if(region === skipRegion) continue;
+    try{
+      const { data } = await withTimeout(worker.recognize(crops[region]), OCR_TIMEOUT_MS, "OCR");
+      if(!wordEvidence(data.text)) continue;
+      const [service, conf] = serviceFromText(data.text, region);
+      if(service && conf === "high") return service;
+    }catch{ /* a region that won't read is not a verdict */ }
+  }
+  return null;
 }
 
 /* Batch OCR over every unverified row in the current pull, several labels at a
@@ -1751,7 +1959,7 @@ document.getElementById("lbimg").onclick = ()=>document.getElementById("lbzoom")
 document.addEventListener("keydown", e=>{
   const lb = document.getElementById("lb");
   if(!lb.classList.contains("on")) return;
-  if(e.key === "Escape"){ lb.classList.remove("on"); lbIdx = -1; startAutoRefresh(); return; }
+  if(e.key === "Escape"){ lb.classList.remove("on"); lbIdx = -1; saveWindow(); startAutoRefresh(); return; }
   if(e.key.toLowerCase() === "s"){ e.preventDefault(); openNextUnverified(); return; }
   const hit = PICKS.find(p => p.key === e.key);
   if(hit){ e.preventDefault(); classify(hit.service); }
@@ -1819,7 +2027,7 @@ function paintRow(idx){
   tds[5].innerHTML = chip(r.carrier);
   tds[6].innerHTML =
     r.read === "reading" ? '<span class="src reading">reading…</span>'
-    : r.read === "label" ? '<span class="src read">read from label</span>'
+    : r.read === "label" ? '<button class="readbtn read" title="Wrong? Open the label and set it" onclick="openLabel(' + idx + ')">read from label</button>'
     : r.read === "pending" ? '<button class="readbtn" onclick="openLabel(' + idx + ')">Check label</button>'
     : '—';
   tr.classList.toggle("reading", r.read === "reading");
@@ -1932,6 +2140,7 @@ let typeTimer;
 });
 document.getElementById("f-car").onchange = render;
 ["f-start","f-end"].forEach(id=>document.getElementById(id).onchange = ()=>{
+  lockWindow();
   if(LIVE) loadLive(); else render();
 });
 document.getElementById("f-emp").onchange = e => {
@@ -1993,7 +2202,9 @@ document.getElementById("home").onclick = ()=>{
   document.getElementById("detail").hidden = true;
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.view==="today"));
   view = "today"; sortKey = "ts"; sortDir = -1;
+  LOCKED = null;
   history.replaceState(null, "", location.pathname);   // drop the saved window too
+  clearWindow();
   loadLive();
   window.scrollTo({top:0,behavior:"smooth"});
 };
@@ -2012,7 +2223,8 @@ document.getElementById("csv").onclick = ()=>{
 /* employee list */
 
 /* A window in the URL wins; otherwise default to today. */
-readUrlState();
+// URL first, then the saved window, then today.
+if(!readUrlState()) restoreWindow();
 (function initDates(){
   const today = (typeof TODAY !== "undefined") ? TODAY : new Date().toISOString().slice(0,10);
   const s = document.getElementById("f-start"), e = document.getElementById("f-end");
@@ -2020,6 +2232,27 @@ readUrlState();
   if(!e.value) e.value = today;
 })();
 
+/* Give every date field a calendar, and make it open the picker on click. */
+(function dressDateFields(){
+  document.querySelectorAll('input[type=date]').forEach(input=>{
+    if(input.closest(".cal")) return;
+    const wrap = document.createElement("span");
+    wrap.className = "cal";
+    input.parentNode.insertBefore(wrap, input);
+    const ico = document.createElement("span");
+    ico.className = "ico";
+    ico.textContent = "\uD83D\uDCC5";          // calendar
+    wrap.appendChild(ico);
+    wrap.appendChild(input);
+    wrap.addEventListener("click", ()=>{
+      if(typeof input.showPicker === "function"){
+        try{ input.showPicker(); }catch{ input.focus(); }
+      } else { input.focus(); }
+    });
+  });
+})();
+
+lockWindow();
 loadResolvedLocal();
 render();
 loadLive();
