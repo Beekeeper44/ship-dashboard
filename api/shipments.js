@@ -2,6 +2,18 @@
 //
 // Runs the saved Metabase question and returns rows shaped for the dashboard.
 // Card 38974 -> https://arena-club.metabaseapp.com/question/38974
+//
+// Card 38974 is a query-builder question: it has no {{start_date}} / {{end_date}}
+// template tags, so there is nothing on the card itself to fill in. Its Start
+// Date / End Date boxes are *dashboard* filters, and dashboard filters only
+// apply on the dashboard's own query route:
+//
+//   POST /api/dashboard/:dash/dashcard/:dashcard/card/:card/query/json
+//
+// So that is the route this file uses whenever the card exposes no date
+// variables of its own. Everything needed to build it — dashboard id, dashcard
+// id, the two parameter ids and their column mappings — is discovered from the
+// Metabase API and cached. Set METABASE_DASHBOARD_ID to skip the discovery.
 
 import { getResolvedServices, getEmployeeNames } from './_store.js';
 
@@ -22,8 +34,10 @@ function headers() {
   };
 }
 
-// The card's native template tags plus its SQL. Metabase requires each
-// parameter to carry the tag's UUID `id`, not just its name, so the card
+/* ---------------------------------------------------------------- card ---- */
+
+// The card's template tags, its SQL and its result columns. Metabase requires
+// each parameter to carry the tag's UUID `id`, not just its name, so the card
 // definition has to be read first. Cached for the life of the lambda.
 let CARD_CACHE = null;
 
@@ -35,15 +49,17 @@ async function getCard(base) {
   const native = card?.dataset_query?.native || {};
   const raw = native['template-tags'] || {};
   CARD_CACHE = {
-    queryType: card?.dataset_query?.type || null,   // 'native' | 'query' (GUI)
+    name: card?.name || '',
+    queryType: card?.dataset_query?.type || null,     // 'native' | 'query' (GUI)
     mbql: card?.dataset_query?.query || null,
     resultMetadata: Array.isArray(card?.result_metadata) ? card.result_metadata : [],
+    dashboardId: card?.dashboard_id || null,
     sql: native.query || '',
     tags: Object.fromEntries(
       Object.entries(raw).map(([name, t]) => [name, {
         id: t.id,
-        type: t.type,                       // text | number | date | dimension
-        widgetType: t['widget-type'] || null, // set on field filters
+        type: t.type,                                 // text | number | date | dimension
+        widgetType: t['widget-type'] || null,         // set on field filters
         required: !!t.required,
         default: t.default ?? null,
       }])
@@ -52,39 +68,12 @@ async function getCard(base) {
   return CARD_CACHE;
 }
 
-// A GUI (query-builder) card has no template tags, so there is nothing to fill
-// in. It can still be filtered the way a dashboard filter does it: by targeting
-// one of its own columns. Find the completed-at column and its field ref.
-const DATE_COLUMN = process.env.METABASE_DATE_COLUMN || 'COMPLETED_AT';
-
-function dateFieldRef(card) {
-  const cols = card.resultMetadata.filter(
-    (c) => /date|time/i.test(String(c.base_type || c.effective_type || ''))
-  );
-  const wanted = String(DATE_COLUMN).toLowerCase();
-  const hit =
-    cols.find((c) => String(c.name || '').toLowerCase() === wanted) ||
-    cols.find((c) => /completed/i.test(String(c.name || ''))) ||
-    cols[0];
-  if (!hit) return null;
-  const ref = hit.field_ref || (hit.id ? ['field', hit.id, null] : null);
-  return ref ? { name: hit.name, ref } : null;
-}
-
-function paramType(tagType) {
-  if (tagType === 'date') return 'date/single';
-  if (tagType === 'number') return 'number/=';
-  return 'category';
-}
-
-// The card's variables are not guaranteed to be called start_date / end_date.
-// Match on shape instead: a date-typed tag whose name looks like a start or an
-// end. Falls back to positional order when there are exactly two date tags.
-// A tag we fail to match is a silent zero-row bug, so this also reports what
-// it matched via ?debug=1 and the X-Sent-Params header.
 const isDateTag = (t) =>
   t.type === 'date' || (t.type === 'dimension' && String(t.widgetType || '').startsWith('date'));
 
+// The card's variables are not guaranteed to be called start_date / end_date.
+// Match on shape instead, falling back to positional order when there are
+// exactly two date tags.
 function resolveDateTags(tags) {
   const dates = Object.entries(tags).filter(([, t]) => isDateTag(t));
   let startName = null;
@@ -111,6 +100,106 @@ function fallbackValue(name, tag) {
   return '';
 }
 
+function paramType(tagType) {
+  if (tagType === 'date') return 'date/single';
+  if (tagType === 'number') return 'number/=';
+  return 'category';
+}
+
+/* ----------------------------------------------------------- dashboard ---- */
+
+// dashboard id + dashcard id + the two date parameters, with the column each
+// one is mapped to. Null when the card doesn't live on a dashboard we can see.
+let ROUTE_CACHE;
+
+async function getDashboardRoute(base, card) {
+  if (ROUTE_CACHE !== undefined) return ROUTE_CACHE;
+  ROUTE_CACHE = null;
+  try {
+    let dashId = process.env.METABASE_DASHBOARD_ID || card.dashboardId || null;
+
+    if (!dashId) {
+      // Metabase lists the dashboards a card appears on. Older versions 404
+      // here, in which case METABASE_DASHBOARD_ID has to be set by hand.
+      const r = await fetch(`${base}/api/card/${CARD_ID}/dashboards`, { headers: headers() });
+      if (r.ok) {
+        const list = await r.json();
+        if (Array.isArray(list) && list.length) dashId = list[0].id ?? list[0].dashboard_id;
+      }
+    }
+    if (!dashId) return ROUTE_CACHE;
+
+    const d = await fetch(`${base}/api/dashboard/${dashId}`, { headers: headers() });
+    if (!d.ok) return ROUTE_CACHE;
+    const dash = await d.json();
+
+    const dashcards = dash.dashcards || dash.ordered_cards || [];
+    const dc = dashcards.find((c) => String(c.card_id) === String(CARD_ID));
+    if (!dc) return ROUTE_CACHE;
+
+    const params = dash.parameters || [];
+    const label = (p) => String(p.slug || p.name || '').toLowerCase();
+    const dateish = params.filter((p) => /date|time/i.test(String(p.type || '')) || /date/.test(label(p)));
+    const startP = dateish.find((p) => /start|from|begin|since/.test(label(p)));
+    const endP = dateish.find((p) => /end|until|thru|through/.test(label(p)));
+
+    const targetFor = (id) =>
+      (dc.parameter_mappings || []).find((m) => m.parameter_id === id)?.target || null;
+
+    ROUTE_CACHE = {
+      dashboardId: dashId,
+      dashboardName: dash.name || '',
+      dashcardId: dc.id,
+      start: startP ? { id: startP.id, type: startP.type, slug: startP.slug, target: targetFor(startP.id) } : null,
+      end: endP ? { id: endP.id, type: endP.type, slug: endP.slug, target: targetFor(endP.id) } : null,
+      allParameters: params.map((p) => ({ id: p.id, slug: p.slug, type: p.type })),
+    };
+  } catch {
+    ROUTE_CACHE = null;
+  }
+  return ROUTE_CACHE;
+}
+
+function dashboardParameters(route, start, end) {
+  const out = [];
+  const add = (p, value) => {
+    if (!p || !value) return;
+    const one = { id: p.id, type: p.type || 'date/single', value };
+    if (p.target) one.target = p.target;
+    out.push(one);
+  };
+  add(route.start, start || end);
+  add(route.end, end || start);
+  return out;
+}
+
+/* ------------------------------------------------------------- execute ---- */
+
+async function runQuery(base, { route, parameters }) {
+  const url = route
+    ? `${base}/api/dashboard/${route.dashboardId}/dashcard/${route.dashcardId}/card/${CARD_ID}/query/json`
+    : `${base}/api/card/${CARD_ID}/query/json`;
+
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ parameters }),
+  });
+  if (!r.ok) {
+    return { ok: false, status: r.status, url, detail: (await r.text()).slice(0, 600) };
+  }
+  const rows = await r.json();
+  if (!Array.isArray(rows)) {
+    return { ok: false, url, detail: JSON.stringify(rows).slice(0, 400) };
+  }
+  return { ok: true, url, rows };
+}
+
+const stampsOf = (rows) =>
+  rows.map((x) => x.COMPLETED_AT || x.completed_at || x.Completed_At).filter(Boolean).map(String).sort();
+
+/* ------------------------------------------------------------- handler ---- */
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'method_not_allowed' });
@@ -135,19 +224,16 @@ export default async function handler(req, res) {
 
   const today = new Date().toLocaleDateString('en-CA');
   const { startName, endName } = resolveDateTags(tags);
-  const parameters = [];
 
+  // --- route A: the card has its own date variables, fill them in
+  const cardParameters = [];
   for (const [name, tag] of Object.entries(tags)) {
-    // A date field filter is a *dimension*, not a variable. Sending it as a
-    // variable is silently ignored by Metabase — the query runs with the filter
-    // unset and you get the card's own default window back, which is exactly
-    // what "the range picker does nothing" looks like.
     if (isDateTag(tag) && tag.type === 'dimension') {
       if (name !== startName && name !== endName) continue;
-      if (name === endName && startName) continue;      // one dimension covers both ends
+      if (name === endName && startName) continue;        // one dimension covers both ends
       const from = start || today;
       const to = end || today;
-      parameters.push({
+      cardParameters.push({
         id: tag.id,
         type: 'date/all-options',
         target: ['dimension', ['template-tag', name]],
@@ -162,7 +248,7 @@ export default async function handler(req, res) {
     else if (tag.required) value = fallbackValue(name, tag);
 
     if (value !== undefined && value !== null && value !== '') {
-      parameters.push({
+      cardParameters.push({
         id: tag.id,
         type: paramType(tag.type),
         target: ['variable', ['template-tag', name]],
@@ -171,124 +257,85 @@ export default async function handler(req, res) {
     }
   }
 
-  // No date variables on the card at all — filter its column directly, which is
-  // what a dashboard date filter does under the hood.
-  let columnFilter = null;
-  if (!startName && !endName) {
-    const f = dateFieldRef(card);
-    if (f && (start || end)) {
-      const from = start || end;
-      const to = end || start;
-      columnFilter = f.name;
-      parameters.push({
-        id: 'ship-dashboard-range',
-        type: 'date/range',
-        target: ['dimension', f.ref],
-        value: from === to ? `${from}~${to}` : `${from}~${to}`,
-      });
-    }
-  }
+  // --- route B: no date variables on the card, so go through the dashboard,
+  //     which is where the Start Date / End Date filters actually live
+  const hasCardDates = !!(startName || endName);
+  const route = hasCardDates ? null : await getDashboardRoute(BASE, card);
+  const useDashboard = !!(route && (route.start || route.end));
+  const parameters = useDashboard
+    ? dashboardParameters(route, start || today, end || today)
+    : cardParameters;
 
-  // Anything the card declares that we are not filling. If a date tag shows up
-  // here, that is the reason a range picked in the UI has no effect: Metabase
-  // falls back to the tag's own default and you get its rows, not yours.
-  const unfilled = Object.keys(tags).filter(
-    (n) => !parameters.some((p) => p.target[1][1] === n)
-  );
+  const unfilled = hasCardDates
+    ? Object.keys(tags).filter((n) => !cardParameters.some((p) => p.target?.[1]?.[1] === n))
+    : [];
 
-  // /api/shipments?debug=1 shows the card's variables, which ones were matched
-  // to the date range, and exactly what would be sent.
   if (debug) {
     return res.status(200).json({
       card: CARD_ID,
+      cardName: card.name,
+      queryType: card.queryType,
+      via: useDashboard ? 'dashboard' : 'card',
       tags,
       matched: { start: startName, end: endName },
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
       unfilled,
-      queryType: card.queryType,
-      columnFilter,
-      dateColumn: dateFieldRef(card),
+      dashboardRoute: route,
       // A GUI card carries its own filter clause; if that clause pins the
       // window (e.g. Completed At = Today) nothing sent from here can widen it.
       mbqlFilter: card.mbql ? (card.mbql.filter || null) : null,
-      // If the SQL pins the window itself — CURRENT_DATE, GETDATE(),
-      // DATEADD(day,-1,...) outside a {{tag}} — no parameter can move it.
       sqlDatePins: (card.sql.match(/\b(CURRENT_DATE|CURRENT_TIMESTAMP|GETDATE\(\)|SYSDATE|NOW\(\)|TODAY\(\))\b/gi) || []),
-      sqlHasDateTags: /\{\{\s*(start|end|from|to)[a-z_]*\s*\}\}/i.test(card.sql),
       sql: card.sql.slice(0, 4000),
     });
   }
 
-  // /api/shipments?probe=1&start=…&end=… runs the card twice — once with the
-  // parameters, once with none — and reports the date span that came back.
-  // If both spans are identical, the parameters are not moving the query and
-  // the window is pinned inside the SQL.
+  // /api/shipments?probe=1&start=…&end=… runs the query twice — once with the
+  // parameters, once with none — and reports the date span each returned.
   if (probe) {
-    const run = async (params) => {
-      const r = await fetch(`${BASE}/api/card/${CARD_ID}/query/json`, {
-        method: 'POST', headers: headers(), body: JSON.stringify({ parameters: params }),
-      });
-      if (!r.ok) return { ok: false, status: r.status, detail: (await r.text()).slice(0, 300) };
-      const rows = await r.json();
-      if (!Array.isArray(rows)) return { ok: false, detail: 'unexpected_shape' };
-      const stamps = rows
-        .map((x) => x.COMPLETED_AT || x.completed_at || x.Completed_At)
-        .filter(Boolean)
-        .map(String)
-        .sort();
-      return {
-        ok: true,
-        rows: rows.length,
-        earliest: stamps[0] || null,
-        latest: stamps[stamps.length - 1] || null,
-      };
-    };
-    const [withParams, withoutParams] = await Promise.all([run(parameters), run([])]);
+    const [withParams, withoutParams] = await Promise.all([
+      runQuery(BASE, { route: useDashboard ? route : null, parameters }),
+      runQuery(BASE, { route: null, parameters: [] }),
+    ]);
+    const span = (r) => r.ok
+      ? {
+          ok: true,
+          rows: r.rows.length,
+          earliest: stampsOf(r.rows)[0] || null,
+          latest: stampsOf(r.rows).slice(-1)[0] || null,
+          url: r.url,
+        }
+      : r;
+    const a = span(withParams);
+    const b = span(withoutParams);
     return res.status(200).json({
+      via: useDashboard ? 'dashboard' : 'card',
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
-      withParams,
-      withoutParams,
+      withParams: a,
+      withoutParams: b,
       verdict: (() => {
-        if (!withParams.ok || !withoutParams.ok) return 'a run failed — see detail';
-        if (!parameters.length) return 'nothing was sent — the card exposes no date variable to fill';
-        const same = withParams.earliest === withoutParams.earliest
-          && withParams.latest === withoutParams.latest;
-        return same
-          ? 'parameters had no effect — the window is set inside the card, not by the request'
-          : 'parameters changed the span — the range is reaching the card';
+        if (!a.ok || !b.ok) return 'a run failed — see detail';
+        if (!parameters.length) return 'nothing was sent — no date variable on the card and no dashboard filter found';
+        return (a.earliest === b.earliest && a.latest === b.latest)
+          ? 'parameters had no effect — the window is set inside the question itself'
+          : 'parameters changed the span — the range is reaching the query';
       })(),
     });
   }
 
-  let raw;
-  try {
-    const r = await fetch(
-      `${BASE}/api/card/${CARD_ID}/query/json`,
-      {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ parameters }),
-      }
-    );
-    if (!r.ok) {
-      const detail = await r.text();
-      return res.status(502).json({
-        error: 'metabase_failed',
-        status: r.status,
-        sentParameters: parameters,
-        detail: detail.slice(0, 600),
-      });
-    }
-    raw = await r.json();
-  } catch (err) {
-    return res.status(502).json({ error: 'metabase_unreachable', detail: String(err) });
+  const result = await runQuery(BASE, { route: useDashboard ? route : null, parameters });
+  if (!result.ok) {
+    return res.status(502).json({
+      error: 'metabase_failed',
+      status: result.status || null,
+      via: useDashboard ? 'dashboard' : 'card',
+      url: result.url,
+      sentParameters: parameters,
+      detail: result.detail,
+    });
   }
-
-  if (!Array.isArray(raw)) {
-    return res.status(502).json({ error: 'unexpected_shape', detail: JSON.stringify(raw).slice(0, 400) });
-  }
+  const raw = result.rows;
 
   // Snowflake returns UPPERCASE column names. Tolerate either case.
   const pick = (row, ...names) => {
@@ -354,8 +401,8 @@ export default async function handler(req, res) {
     ? 'no-store, no-cache, must-revalidate'
     : 's-maxage=60, stale-while-revalidate=120');
   res.setHeader('X-Cache-Store', process.env.DATABASE_URL ? 'neon' : 'none');
-  res.setHeader('X-Sent-Params', JSON.stringify(parameters.map((p) => [p.target[1][1], p.value])));
-  res.setHeader('X-Unfilled-Tags', unfilled.join(',') || 'none');
+  res.setHeader('X-Query-Route', useDashboard ? `dashboard/${route.dashboardId}` : `card/${CARD_ID}`);
+  res.setHeader('X-Sent-Params', JSON.stringify(parameters.map((p) => [p.slug || p.id, p.value])));
   return res.status(200).json(rows);
 }
 

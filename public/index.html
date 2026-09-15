@@ -1250,8 +1250,11 @@ let saveOk = false, saveWarned = false;
 function noteSaveProblem(detail){
   if(saveWarned) return;
   saveWarned = true;
-  setStatus("err", "Carrier results are not being saved to the database (" + detail +
-    "). They'll hold in this browser but won't persist for anyone else — set DATABASE_URL in Vercel.");
+  const missingTable = /does not exist|undefined_table/i.test(String(detail));
+  setStatus("err", "Carrier results are not being saved to the database (" + detail + "). " +
+    (missingTable
+      ? "The tables are created on the first write — redeploy so the new API code runs, or run schema.sql against the Neon database."
+      : "They'll hold in this browser but won't persist for anyone else — check DATABASE_URL in Vercel."));
 }
 
 /* Re-apply what we know after every load, since /api/shipments rebuilds DATA
