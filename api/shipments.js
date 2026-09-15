@@ -185,10 +185,10 @@ function dashboardParameters(route, start, end) {
 const DATE_VARS = (process.env.METABASE_DATE_VARS || 'start_date,end_date')
   .split(',').map((x) => x.trim()).filter(Boolean);
 
-function namedParameters(start, end, withIds) {
+function namedParameters(start, end, withIds, type = 'date/single') {
   const [startVar, endVar] = DATE_VARS;
   const one = (name, value, id) => {
-    const p = { type: 'date/single', target: ['variable', ['template-tag', name]], value };
+    const p = { type, target: ['variable', ['template-tag', name]], value };
     if (withIds) p.id = id;
     return p;
   };
@@ -198,18 +198,38 @@ function namedParameters(start, end, withIds) {
   return out;
 }
 
-// Some Metabase versions want an `id` on every parameter, others reject one
-// they don't recognise. Try with, fall back to without.
+// The card's SQL reads TO_DATE(TO_VARCHAR({{start_date}})), so the variable may
+// be declared Text rather than Date — and a parameter whose type doesn't match
+// the tag is rejected, leaving the query to fall back on its CURRENT_DATE()
+// default. Some Metabase versions also want an `id` on every parameter while
+// others reject one they don't recognise. Rather than guess, walk the
+// combinations and keep the first that comes back inside the window asked for.
+//
+// A run that returns rows from outside the window is a run whose parameters
+// were ignored, so it doesn't count as a success.
+const BYNAME_TYPES = ['date/single', 'category', 'date/all-options'];
+
 async function runByName(base, start, end) {
-  let last = null;
-  for (const withIds of [true, false]) {
-    const parameters = namedParameters(start, end, withIds);
-    if (!parameters.length) return { ok: false, url: 'by-name', detail: 'no date variable names configured' };
-    const out = await runQuery(base, { route: null, parameters });
-    if (out.ok) return { ...out, sent: parameters };
-    last = { ...out, sent: parameters };
+  if (!DATE_VARS.length) return { ok: false, url: 'by-name', detail: 'no date variable names configured' };
+  const dayOf = (r) => String(r.COMPLETED_AT || r.completed_at || '').slice(0, 10);
+  let fallback = null;
+
+  for (const type of BYNAME_TYPES) {
+    for (const withIds of [false, true]) {
+      const parameters = namedParameters(start, end, withIds, type);
+      const out = await runQuery(base, { route: null, parameters });
+      const variant = { type, withIds };
+      if (!out.ok) {
+        fallback = fallback || { ...out, sent: parameters, variant };
+        continue;
+      }
+      const applied = out.rows.length === 0 ||
+        out.rows.every((r) => { const d = dayOf(r); return !d || (d >= start && d <= end); });
+      if (applied) return { ...out, sent: parameters, variant };
+      fallback = { ...out, sent: parameters, variant };   // ran, but ignored the dates
+    }
   }
-  return last;
+  return fallback;
 }
 
 /* ----------------------------------------------------------- own query ---- */
@@ -435,7 +455,7 @@ export default async function handler(req, res) {
       // key can run the card but not read its definition. Names are enough.
       tagsReadable: Object.keys(tags).length > 0,
       dateVariableNames: DATE_VARS,
-      byNameParameters: namedParameters(start || today, end || today, true),
+      byNameParameterVariants: BYNAME_TYPES.map((t) => namedParameters(start || today, end || today, false, t)),
       queryType: card.queryType,
       via: useDashboard ? 'dashboard' : 'card',
       tags,
@@ -479,7 +499,8 @@ export default async function handler(req, res) {
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
       byName: n,
-      byNameParameters: namedParameters(start || today, end || today, true),
+      byNameVariant: byName.variant || null,
+      byNameSent: byName.sent || null,
       withParams: a,
       withoutParams: b,
       adhoc: c,
@@ -603,6 +624,7 @@ export default async function handler(req, res) {
     : 's-maxage=60, stale-while-revalidate=120');
   res.setHeader('X-Cache-Store', process.env.DATABASE_URL ? 'neon' : 'none');
   res.setHeader('X-Query-Route', via);
+  if (result.variant) res.setHeader('X-Param-Variant', JSON.stringify(result.variant));
   res.setHeader('X-Routes-Tried', JSON.stringify(tried));
   res.setHeader('X-Window', `${from}..${to}`);
   res.setHeader('X-Sent-Params', JSON.stringify(parameters.map((p) => [p.slug || p.id, p.value])));
