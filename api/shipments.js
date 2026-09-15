@@ -54,6 +54,7 @@ async function getCard(base) {
     mbql: card?.dataset_query?.query || null,
     resultMetadata: Array.isArray(card?.result_metadata) ? card.result_metadata : [],
     dashboardId: card?.dashboard_id || null,
+    databaseId: card?.database_id ?? card?.dataset_query?.database ?? null,
     sql: native.query || '',
     tags: Object.fromEntries(
       Object.entries(raw).map(([name, t]) => [name, {
@@ -171,6 +172,58 @@ function dashboardParameters(route, start, end) {
   add(route.start, start || end);
   add(route.end, end || start);
   return out;
+}
+
+/* --------------------------------------------------------------- ad-hoc ---- */
+
+// The most dependable route, and the one that needs no discovery at all: run a
+// new query whose source IS the saved question, with a date filter on top.
+//
+//   { "source-table": "card__38974",
+//     "filter": ["between", ["field","COMPLETED_AT",…], "2026-09-08", "2026-09-11"] }
+//
+// Works whether 38974 is native or query-builder, with or without variables,
+// on a dashboard or not. The one thing it cannot do is widen a window the
+// question itself pins — nesting can only narrow.
+const DATE_COLUMN = process.env.METABASE_DATE_COLUMN || 'COMPLETED_AT';
+
+function dateColumn(card) {
+  const cols = card.resultMetadata || [];
+  const wanted = String(DATE_COLUMN).toLowerCase();
+  const hit =
+    cols.find((c) => String(c.name || '').toLowerCase() === wanted) ||
+    cols.find((c) => /completed/i.test(String(c.name || '')) &&
+                     /date|time/i.test(String(c.base_type || c.effective_type || ''))) ||
+    cols.find((c) => /date|time/i.test(String(c.base_type || c.effective_type || '')));
+  if (!hit) return { name: DATE_COLUMN, baseType: 'type/DateTime' };
+  return { name: hit.name, baseType: hit.base_type || hit.effective_type || 'type/DateTime' };
+}
+
+function adhocQuery(card, start, end) {
+  const col = dateColumn(card);
+  return {
+    type: 'query',
+    database: card.databaseId,
+    query: {
+      'source-table': `card__${CARD_ID}`,
+      filter: ['between', ['field', col.name, { 'base-type': col.baseType }], start, end],
+    },
+  };
+}
+
+async function runAdhoc(base, card, start, end) {
+  if (!card.databaseId) return { ok: false, url: 'adhoc', detail: 'no database id on the card' };
+  const url = `${base}/api/dataset/json`;
+  const body = new URLSearchParams({ query: JSON.stringify(adhocQuery(card, start, end)) });
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-api-key': process.env.METABASE_API_KEY },
+    body,
+  });
+  if (!r.ok) return { ok: false, status: r.status, url, detail: (await r.text()).slice(0, 400) };
+  const rows = await r.json();
+  if (!Array.isArray(rows)) return { ok: false, url, detail: JSON.stringify(rows).slice(0, 400) };
+  return { ok: true, url, rows };
 }
 
 /* ------------------------------------------------------------- execute ---- */
@@ -293,9 +346,10 @@ export default async function handler(req, res) {
   // /api/shipments?probe=1&start=…&end=… runs the query twice — once with the
   // parameters, once with none — and reports the date span each returned.
   if (probe) {
-    const [withParams, withoutParams] = await Promise.all([
+    const [withParams, withoutParams, adhoc] = await Promise.all([
       runQuery(BASE, { route: useDashboard ? route : null, parameters }),
       runQuery(BASE, { route: null, parameters: [] }),
+      runAdhoc(BASE, card, start || today, end || today),
     ]);
     const span = (r) => r.ok
       ? {
@@ -308,13 +362,20 @@ export default async function handler(req, res) {
       : r;
     const a = span(withParams);
     const b = span(withoutParams);
+    const c = span(adhoc);
     return res.status(200).json({
       via: useDashboard ? 'dashboard' : 'card',
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
       withParams: a,
       withoutParams: b,
+      adhoc: c,
+      adhocQuery: adhocQuery(card, start || today, end || today),
       verdict: (() => {
+        if (c.ok && c.rows > 0 && c.latest && c.latest.slice(0, 10) <= (end || today))
+          return 'the nested ad-hoc query honours the range — that is the route the app now uses';
+        if (c.ok && c.rows === 0)
+          return 'the nested ad-hoc query returned nothing for that window — the question itself only exposes today';
         if (!a.ok || !b.ok) return 'a run failed — see detail';
         if (!parameters.length) return 'nothing was sent — no date variable on the card and no dashboard filter found';
         return (a.earliest === b.earliest && a.latest === b.latest)
@@ -324,18 +385,41 @@ export default async function handler(req, res) {
     });
   }
 
-  const result = await runQuery(BASE, { route: useDashboard ? route : null, parameters });
-  if (!result.ok) {
-    return res.status(502).json({
-      error: 'metabase_failed',
-      status: result.status || null,
-      via: useDashboard ? 'dashboard' : 'card',
-      url: result.url,
-      sentParameters: parameters,
-      detail: result.detail,
-    });
+  // Try the routes in order of reliability and stop at the first one that comes
+  // back inside the window that was asked for. A route that answers with rows
+  // from outside the range is a route that ignored the range.
+  const from = start || today;
+  const to = end || today;
+  const wantsRange = !!(start || end);
+  const dayOf = (r) => String(r.COMPLETED_AT || r.completed_at || '').slice(0, 10);
+  const inWindow = (rows) =>
+    rows.length > 0 && rows.every((r) => { const d = dayOf(r); return !d || (d >= from && d <= to); });
+
+  const attempts = [];
+  if (wantsRange) attempts.push({ name: 'adhoc', run: () => runAdhoc(BASE, card, from, to) });
+  if (useDashboard) attempts.push({ name: 'dashboard', run: () => runQuery(BASE, { route, parameters }) });
+  attempts.push({ name: 'card', run: () => runQuery(BASE, { route: null, parameters: useDashboard ? [] : parameters }) });
+
+  let result = null;
+  let via = null;
+  const tried = [];
+  for (const a of attempts) {
+    const out = await a.run();
+    tried.push({ route: a.name, ok: out.ok, rows: out.ok ? out.rows.length : null, detail: out.ok ? null : (out.detail || out.status) });
+    if (!out.ok) continue;
+    result = out; via = a.name;
+    if (!wantsRange || inWindow(out.rows)) break;      // good enough, stop here
   }
-  const raw = result.rows;
+
+  if (!result) {
+    return res.status(502).json({ error: 'metabase_failed', tried, sentParameters: parameters });
+  }
+
+  // Whatever route answered, never show rows from outside the requested window.
+  // Better an honest empty day than today's rows labelled as last Tuesday.
+  const raw = wantsRange
+    ? result.rows.filter((r) => { const d = dayOf(r); return !d || (d >= from && d <= to); })
+    : result.rows;
 
   // Snowflake returns UPPERCASE column names. Tolerate either case.
   const pick = (row, ...names) => {
@@ -401,7 +485,9 @@ export default async function handler(req, res) {
     ? 'no-store, no-cache, must-revalidate'
     : 's-maxage=60, stale-while-revalidate=120');
   res.setHeader('X-Cache-Store', process.env.DATABASE_URL ? 'neon' : 'none');
-  res.setHeader('X-Query-Route', useDashboard ? `dashboard/${route.dashboardId}` : `card/${CARD_ID}`);
+  res.setHeader('X-Query-Route', via);
+  res.setHeader('X-Routes-Tried', JSON.stringify(tried));
+  res.setHeader('X-Window', `${from}..${to}`);
   res.setHeader('X-Sent-Params', JSON.stringify(parameters.map((p) => [p.slug || p.id, p.value])));
   return res.status(200).json(rows);
 }
