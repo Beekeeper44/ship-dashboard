@@ -35,6 +35,9 @@ async function getCard(base) {
   const native = card?.dataset_query?.native || {};
   const raw = native['template-tags'] || {};
   CARD_CACHE = {
+    queryType: card?.dataset_query?.type || null,   // 'native' | 'query' (GUI)
+    mbql: card?.dataset_query?.query || null,
+    resultMetadata: Array.isArray(card?.result_metadata) ? card.result_metadata : [],
     sql: native.query || '',
     tags: Object.fromEntries(
       Object.entries(raw).map(([name, t]) => [name, {
@@ -47,6 +50,25 @@ async function getCard(base) {
     ),
   };
   return CARD_CACHE;
+}
+
+// A GUI (query-builder) card has no template tags, so there is nothing to fill
+// in. It can still be filtered the way a dashboard filter does it: by targeting
+// one of its own columns. Find the completed-at column and its field ref.
+const DATE_COLUMN = process.env.METABASE_DATE_COLUMN || 'COMPLETED_AT';
+
+function dateFieldRef(card) {
+  const cols = card.resultMetadata.filter(
+    (c) => /date|time/i.test(String(c.base_type || c.effective_type || ''))
+  );
+  const wanted = String(DATE_COLUMN).toLowerCase();
+  const hit =
+    cols.find((c) => String(c.name || '').toLowerCase() === wanted) ||
+    cols.find((c) => /completed/i.test(String(c.name || ''))) ||
+    cols[0];
+  if (!hit) return null;
+  const ref = hit.field_ref || (hit.id ? ['field', hit.id, null] : null);
+  return ref ? { name: hit.name, ref } : null;
 }
 
 function paramType(tagType) {
@@ -149,6 +171,24 @@ export default async function handler(req, res) {
     }
   }
 
+  // No date variables on the card at all — filter its column directly, which is
+  // what a dashboard date filter does under the hood.
+  let columnFilter = null;
+  if (!startName && !endName) {
+    const f = dateFieldRef(card);
+    if (f && (start || end)) {
+      const from = start || end;
+      const to = end || start;
+      columnFilter = f.name;
+      parameters.push({
+        id: 'ship-dashboard-range',
+        type: 'date/range',
+        target: ['dimension', f.ref],
+        value: from === to ? `${from}~${to}` : `${from}~${to}`,
+      });
+    }
+  }
+
   // Anything the card declares that we are not filling. If a date tag shows up
   // here, that is the reason a range picked in the UI has no effect: Metabase
   // falls back to the tag's own default and you get its rows, not yours.
@@ -166,6 +206,12 @@ export default async function handler(req, res) {
       requested: { start: start || null, end: end || null },
       sentParameters: parameters,
       unfilled,
+      queryType: card.queryType,
+      columnFilter,
+      dateColumn: dateFieldRef(card),
+      // A GUI card carries its own filter clause; if that clause pins the
+      // window (e.g. Completed At = Today) nothing sent from here can widen it.
+      mbqlFilter: card.mbql ? (card.mbql.filter || null) : null,
       // If the SQL pins the window itself — CURRENT_DATE, GETDATE(),
       // DATEADD(day,-1,...) outside a {{tag}} — no parameter can move it.
       sqlDatePins: (card.sql.match(/\b(CURRENT_DATE|CURRENT_TIMESTAMP|GETDATE\(\)|SYSDATE|NOW\(\)|TODAY\(\))\b/gi) || []),
@@ -204,9 +250,15 @@ export default async function handler(req, res) {
       sentParameters: parameters,
       withParams,
       withoutParams,
-      verdict: withParams.ok && withoutParams.ok && withParams.rows === withoutParams.rows
-        ? 'parameters had no effect — the window is set inside the card, not by the request'
-        : 'parameters changed the result — the range is reaching the card',
+      verdict: (() => {
+        if (!withParams.ok || !withoutParams.ok) return 'a run failed — see detail';
+        if (!parameters.length) return 'nothing was sent — the card exposes no date variable to fill';
+        const same = withParams.earliest === withoutParams.earliest
+          && withParams.latest === withoutParams.latest;
+        return same
+          ? 'parameters had no effect — the window is set inside the card, not by the request'
+          : 'parameters changed the span — the range is reaching the card';
+      })(),
     });
   }
 
